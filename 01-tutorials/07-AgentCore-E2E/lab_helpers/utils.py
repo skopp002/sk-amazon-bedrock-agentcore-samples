@@ -334,6 +334,17 @@ def cleanup_cognito_resources(pool_id):
         return False
 
 
+def get_existing_cognito_config():
+    """Get the existing Cognito configuration used in lab-04"""
+    try:
+        secret_value = get_customer_support_secret()
+        if secret_value:
+            return json.loads(secret_value)
+        return None
+    except Exception as e:
+        print(f"Error getting existing Cognito config: {e}")
+        return None
+
 def reauthenticate_user(client_id, client_secret):
     boto_session = Session()
     region = boto_session.region_name

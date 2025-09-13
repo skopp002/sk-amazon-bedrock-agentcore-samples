@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# Enable strict error handling
+set -euo pipefail
+
 # ----- Config -----
 BUCKET_NAME=${1:-customersupport112}
 INFRA_STACK_NAME=${2:-CustomerSupportStackInfra}
@@ -7,7 +10,16 @@ COGNITO_STACK_NAME=${3:-CustomerSupportStackCognito}
 INFRA_TEMPLATE_FILE="prerequisite/infrastructure.yaml"
 COGNITO_TEMPLATE_FILE="prerequisite/cognito.yaml"
 REGION=$(aws configure get region 2>/dev/null || echo "us-west-2")
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+# Get AWS Account ID with proper error handling
+echo "🔍 Getting AWS Account ID..."
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>&1)
+if [ $? -ne 0 ] || [ -z "$ACCOUNT_ID" ] || [ "$ACCOUNT_ID" = "None" ]; then
+    echo "❌ Failed to get AWS Account ID. Please check your AWS credentials and network connectivity."
+    echo "Error: $ACCOUNT_ID"
+    exit 1
+fi
+
 FULL_BUCKET_NAME="${BUCKET_NAME}-${ACCOUNT_ID}-${REGION}"
 ZIP_FILE="lambda.zip"
 LAYER_ZIP_FILE="ddgs-layer.zip"
@@ -62,6 +74,7 @@ deploy_stack() {
   output=$(aws cloudformation deploy \
     --stack-name "$stack_name" \
     --template-file "$template_file" \
+    --s3-bucket "$FULL_BUCKET_NAME" \
     --capabilities CAPABILITY_NAMED_IAM \
     --region "$REGION" \
     "${params[@]}" 2>&1)

@@ -6,12 +6,17 @@
 - aristsakpinis93
 - aurbac
 - bergjaak
+- danystinson
 - dhawalkp
+- didhd
 - EashanKaushik
+- Grace Lang
 - khastation
 - manchandakp
+- Meghana Ashok
 - mttanke
 - mvangara10
+- ozhn
 - rahullks
 - rameshv29
 - rohillasandeep
@@ -22,3 +27,6 @@
 - vedashreevinay
 - vgodwinamz
 - w601sxs
+- erezweinstein5
+- HardikThakkar94
+- brianloyal

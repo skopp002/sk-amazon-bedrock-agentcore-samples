@@ -2,23 +2,18 @@
 """
 Test end-to-end flow: Cognito Token → Runtime → Agent → Gateway → MCP Server
 """
-import os
 import json
-import boto3
 import requests
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+from config import config
 
 def get_cognito_token():
     """Get Cognito bearer token using client_credentials flow"""
     print("🔑 Getting Cognito bearer token...")
     
-    cognito_domain = os.getenv('COGNITO_DOMAIN')
-    client_id = os.getenv('COGNITO_APP_CLIENT_ID')
-    client_secret = os.getenv('COGNITO_APP_CLIENT_SECRET')
-    scope = os.getenv('COGNITO_SCOPE_QUERY', 'lakehouse-api/claims.query')
+    cognito_domain = config.COGNITO_DOMAIN
+    client_id = config.COGNITO_APP_CLIENT_ID
+    client_secret = config.COGNITO_APP_CLIENT_SECRET
+    scope = config.COGNITO_SCOPE_QUERY
     
     # Fix scope format: replace slashes with dots
     scope = scope.replace('/claims/', '/claims.')
@@ -54,13 +49,13 @@ def invoke_agent_runtime(bearer_token: str, prompt: str = "Show me all my claims
     print(f"\n🤖 Invoking agent runtime...")
     print(f"   Prompt: {prompt}")
     
-    runtime_id = os.getenv('LAKEHOUSE_AGENT_RUNTIME_ID')
-    region = os.getenv('AWS_REGION', 'us-east-1')
+    runtime_id = config.RUNTIME_ID
+    region = config.AWS_REGION
     
     try:
         # Build runtime endpoint URL using the correct format
         # Format: https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_arn}/invocations
-        runtime_arn = os.getenv('LAKEHOUSE_AGENT_RUNTIME_ARN')
+        runtime_arn = config.RUNTIME_ARN
         escaped_arn = requests.utils.quote(runtime_arn, safe='')
         base_url = f"https://bedrock-agentcore.{region}.amazonaws.com"
         runtime_url = f"{base_url}/runtimes/{escaped_arn}/invocations"

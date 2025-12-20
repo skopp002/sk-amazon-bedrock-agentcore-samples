@@ -9,7 +9,7 @@ Prerequisites:
 - AWS credentials configured
 - Docker running
 - Gateway configured (run create_gateway.py)
-- Configuration in .env file
+- Configuration in SSM Parameter Store (see README.md)
 - bedrock-agentcore-starter-toolkit installed
 
 Usage:
@@ -20,20 +20,17 @@ import sys
 from pathlib import Path
 import boto3
 import json
-import os
-from dotenv import load_dotenv
 
-# Load environment variables
-env_path = Path(__file__).parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(env_path)
-    print(f"📄 Loaded environment variables from .env")
+# Add parent directory to path to import config
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Configuration
-REGION = os.getenv('AWS_REGION', 'us-east-1')
-GATEWAY_ARN = os.getenv('GATEWAY_ARN', '')
-COGNITO_USER_POOL_ID = os.getenv('COGNITO_USER_POOL_ID')
-COGNITO_APP_CLIENT_ID = os.getenv('COGNITO_APP_CLIENT_ID')
+from config import config
+
+# Configuration from SSM
+REGION = config.AWS_REGION
+GATEWAY_ARN = config.GATEWAY_ARN
+COGNITO_USER_POOL_ID = config.COGNITO_USER_POOL_ID
+COGNITO_APP_CLIENT_ID = config.COGNITO_APP_CLIENT_ID
 
 try:
     from bedrock_agentcore_starter_toolkit import Runtime
@@ -237,52 +234,37 @@ def deploy_to_runtime(role_arn):
         raise
 
 
-def write_to_env_file(env_path, updates):
-    """Write or update values in the .env file."""
-    # Read existing content
-    existing_lines = []
-    existing_keys = set()
+def save_to_ssm(updates):
+    """
+    Save deployment outputs to SSM Parameter Store.
     
-    if env_path.exists():
-        with open(env_path, 'r') as f:
-            existing_lines = f.readlines()
+    Args:
+        updates: Dictionary of parameter names and values to save
+    """
+    import boto3
+    from botocore.exceptions import ClientError
+    
+    ssm_client = boto3.client('ssm')
+    
+    print(f"\n💾 Saving deployment outputs to SSM Parameter Store...")
+    
+    for key, value in updates.items():
+        # Convert to SSM parameter name (lh_ prefix, lowercase)
+        ssm_param_name = f"lh_{key.lower()}"
         
-        # Track which keys already exist
-        for line in existing_lines:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key = line.split('=')[0].strip()
-                existing_keys.add(key)
+        try:
+            ssm_client.put_parameter(
+                Name=ssm_param_name,
+                Value=value,
+                Type='String',
+                Overwrite=True,
+                Description=f"Lakehouse agent deployment output: {key}"
+            )
+            print(f"  ✅ Saved {ssm_param_name}")
+        except ClientError as e:
+            print(f"  ⚠️  Failed to save {ssm_param_name}: {e}")
     
-    # Update existing keys or append new ones
-    updated_lines = []
-    for line in existing_lines:
-        line_stripped = line.strip()
-        if line_stripped and not line_stripped.startswith('#') and '=' in line_stripped:
-            key = line_stripped.split('=')[0].strip()
-            if key in updates:
-                # Update existing key
-                updated_lines.append(f"{key}={updates[key]}\n")
-                del updates[key]  # Remove from updates dict
-            else:
-                updated_lines.append(line)
-        else:
-            updated_lines.append(line)
-    
-    # Append new keys that weren't in the file
-    if updates:
-        # Add a newline if file doesn't end with one
-        if updated_lines and not updated_lines[-1].endswith('\n'):
-            updated_lines.append('\n')
-        
-        for key, value in updates.items():
-            updated_lines.append(f"{key}={value}\n")
-    
-    # Write back to file
-    with open(env_path, 'w') as f:
-        f.writelines(updated_lines)
-    
-    print(f"✅ Updated .env file with agent configuration")
+    print(f"✅ Deployment outputs saved to SSM Parameter Store")
 
 
 def main():
@@ -295,7 +277,7 @@ def main():
     print("\n🔍 Validating configuration...")
     
     if not GATEWAY_ARN:
-        print("\n⚠️  Warning: GATEWAY_ARN not set in .env file")
+        print("\n⚠️  Warning: GATEWAY_ARN not set in SSM Parameter Store")
         print("   The agent will not be able to access Gateway tools")
         response = input("\nProceed anyway? (yes/no): ")
         if response.lower() not in ['yes', 'y']:
@@ -328,23 +310,23 @@ def main():
         print("=" * 70)
         result = deploy_to_runtime(role_arn)
         
-        # Step 3: Write to .env file
-        env_updates = {
+        # Step 3: Save deployment outputs to SSM Parameter Store
+        ssm_updates = {
             'LAKEHOUSE_AGENT_RUNTIME_ARN': result['runtime_arn'],
             'LAKEHOUSE_AGENT_RUNTIME_ID': result['runtime_id'],
             'LAKEHOUSE_AGENT_NAME': 'lakehouse_agent'
         }
-        write_to_env_file(env_path, env_updates)
+        save_to_ssm(ssm_updates)
         
         # Print summary
         print("\n" + "=" * 70)
         print("Deployment Complete!")
         print("=" * 70)
         
-        print("\n📝 Configuration saved to .env file:")
-        print(f"   LAKEHOUSE_AGENT_RUNTIME_ARN={result['runtime_arn']}")
-        print(f"   LAKEHOUSE_AGENT_RUNTIME_ID={result['runtime_id']}")
-        print(f"   LAKEHOUSE_AGENT_NAME=lakehouse_agent")
+        print("\n✅ Deployment outputs saved to SSM Parameter Store:")
+        print(f"   lh_lakehouse_agent_runtime_arn = {result['runtime_arn']}")
+        print(f"   lh_lakehouse_agent_runtime_id = {result['runtime_id']}")
+        print(f"   lh_lakehouse_agent_name = lakehouse_agent")
         
         # Print JWT configuration status
         if COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID:
@@ -355,7 +337,7 @@ def main():
         else:
             print("\n⚠️  JWT Authentication Not Configured:")
             print("   Runtime deployed with IAM authentication")
-            print("   To enable JWT auth, set COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID in .env and redeploy")
+            print("   To enable JWT auth, set COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID in SSM and redeploy")
         
         print("\n🔗 Next Steps:")
         print("   1. Test the agent: python ../test_agent_simple.py")

@@ -317,207 +317,272 @@ sagemaker>=2.200.0
 
 ---
 
-## Quick Start
+## Deployment Overview
 
-### Step 1: Configure Environment
+### Deployment Notebooks
 
-```bash
-# 1. Copy configuration template
-cp .env.example .env
+This project uses **Jupyter notebooks** for deployment. Each notebook is numbered to indicate the execution order and includes:
+- Prerequisites check
+- Step-by-step instructions
+- Automated deployment commands
+- Configuration saving to SSM
+- Next steps guidance
 
-# 2. Edit .env with your values
-nano .env
+### Notebook Execution Order
 
-# Required values:
-# AWS_ACCOUNT_ID=XXXXXXXXXXXX
-# AWS_REGION=us-east-1
-# S3_BUCKET_NAME=your-unique-bucket-name
-
-# 3. Validate configuration
-python config.py --validate
+```
+00-prerequisites-setup.ipynb     ← Start here
+    ↓
+01-deploy-athena.ipynb          (Data Layer)
+    ↓
+02-deploy-lake-formation.ipynb  (Security Layer)
+    ↓
+03-deploy-cognito.ipynb         (Identity Layer)
+    ↓
+04-deploy-mcp-server.ipynb      (Tool Layer)
+    ↓
+05-deploy-gateway.ipynb         (Gateway Layer)
+    ↓
+06-deploy-agent.ipynb           (Agent Layer)
+    ↓
+07-test-deployment.ipynb        (Testing)
+    ↓
+streamlit-ui/streamlit_app.py   (UI - run manually)
 ```
 
-**Variable Placeholders**: Set `AWS_ACCOUNT_ID` once, and it's automatically substituted in all ARNs using `${AWS_ACCOUNT_ID}` syntax.
+### Dependency Diagram
 
-### Step 2: Deploy Foundation (Athena Database)
-
-```bash
-cd athena-setup
-
-# Creates database, tables, and sample data
-python setup_athena.py --bucket-name insurance-processor-rba --region us-east-1
+```mermaid
+graph TD
+    A[00-prerequisites-setup.ipynb<br/>SSM Configuration] --> B[01-deploy-athena.ipynb<br/>Athena Database]
+    B --> C[02-deploy-lake-formation.ipynb<br/>Lake Formation RLS]
+    C --> D[03-deploy-cognito.ipynb<br/>Cognito User Pool]
+    D --> E[04-deploy-mcp-server.ipynb<br/>MCP Server Runtime]
+    E --> F[05-deploy-gateway.ipynb<br/>Gateway & Interceptor]
+    F --> G[06-deploy-agent.ipynb<br/>Lakehouse Agent]
+    G --> H[07-test-deployment.ipynb<br/>End-to-End Testing]
+    H --> I[Streamlit UI<br/>Interactive Testing]
+    
+    style A fill:#e1f5ff
+    style B fill:#fff3e0
+    style C fill:#f3e5f5
+    style D fill:#e8f5e9
+    style E fill:#fff9c4
+    style F fill:#fce4ec
+    style G fill:#e0f2f1
+    style H fill:#f1f8e9
+    style I fill:#e8eaf6
 ```
 
-**Creates**:
+### Quick Start
+
+**Step 1: Open and run the notebooks in order**
+
+```bash
+# Start with prerequisites
+jupyter notebook 00-prerequisites-setup.ipynb
+
+# Then run each deployment notebook in sequence
+# 01 → 02 → 03 → 04 → 05 → 06 → 07
+```
+
+**Step 2: Launch Streamlit UI**
+
+```bash
+cd streamlit-ui
+streamlit run streamlit_app.py
+```
+
+### Estimated Time
+
+| Notebook | Duration | Description |
+|----------|----------|-------------|
+| 00-prerequisites | 10 min | SSM configuration |
+| 01-athena | 15 min | Database setup |
+| 02-lake-formation | 20 min | RLS configuration |
+| 03-cognito | 15 min | User authentication |
+| 04-mcp-server | 30 min | MCP server deployment |
+| 05-gateway | 25 min | Gateway & interceptor |
+| 06-agent | 30 min | Agent deployment |
+| 07-test | 15 min | Testing |
+| **Total** | **~2.5 hours** | Complete deployment |
+
+---
+
+## Detailed Deployment Steps
+
+### Step 1: Configure Environment with SSM
+
+**📓 Notebook**: `00-prerequisites-setup.ipynb`
+
+This notebook configures AWS Systems Manager (SSM) Parameter Store with initial configuration values.
+
+**What it does:**
+- Validates AWS credentials
+- Creates SSM parameters with `lh_` prefix
+- Auto-detects AWS Account ID and Region
+- Validates configuration
+
+**Next**: Run `01-deploy-athena.ipynb`
+
+---
+
+### Step 2: Deploy Athena Database
+
+**📓 Notebook**: `01-deploy-athena.ipynb`
+
+Creates the Athena database and tables for the lakehouse data layer.
+
+**What it creates:**
 - Database: `lakehouse_db`
-- Table: `claims` with 9 sample claims
-- Table: `users` with user metadata
-- Test data for 3 users (user001, user002, adjuster001)
+- Table: `claims` (with 9 sample claims)
+- Table: `users` (with 3 test users)
 
-### Step 3: Deploy Security (Lake Formation RLS)
+**Next**: Run `02-deploy-lake-formation.ipynb`
 
-```bash
-# Still in athena-setup/
-python setup_lake_formation.py --bucket insurance-processor-rba
-```
+---
 
-**Creates**:
+### Step 3: Deploy Lake Formation RLS
+
+**📓 Notebook**: `02-deploy-lake-formation.ipynb`
+
+Sets up enterprise-grade row-level security using AWS Lake Formation.
+
+**What it creates:**
 - IAM role: `lakehouse-rls-role`
-- Data filter on claims table
-- Row filter: `user_id = '${aws:PrincipalTag/user_id}'`
+- Data filter: `user_id = '${aws:PrincipalTag/user_id}'`
 - Lake Formation permissions
 
-**Save the output `RLS_ROLE_ARN` to your `.env` file.**
+**Next**: Run `03-deploy-cognito.ipynb`
 
-### Step 4: Deploy Governance (SageMaker Unified Studio)
+---
 
-```bash
-cd ../governance-setup
+### Step 4: Deploy Cognito
 
-# Creates DataZone domain, project, and business glossary
-python setup_sagemaker_unified_studio.py
-```
+**📓 Notebook**: `03-deploy-cognito.ipynb`
 
-**Creates**:
-- DataZone domain: `lakehouse-domain`
-- Project: `health-lakehouse`
-- Athena data source registration
-- Business glossary with 15+ healthcare terms
-- Data lineage tracking
+Sets up user authentication with AWS Cognito.
 
-**Save the output values to your `.env` file.**
-
-### Step 5: Deploy Identity (Cognito)
-
-```bash
-cd ../gateway-setup
-
-python setup_cognito.py --region us-east-1
-```
-```
-Output from the run
-✅ User Pool created: us-east-1_wswECmXiE
-✅ Resource Server created with scopes
-✅ App Client created: 5hlgvm5k9llpmofpirmqh3ki50
-✅ Domain created: https://lakehouse-useast1w.auth.us-east-1.amazoncognito.com
-✅ Test users created
-
- Configuration:
-{
-  "user_pool_id": "us-east-1_7FrHmmIbH",
-  "client_id": "m41n4ln1nfs1ikhrm9j3m8tbd",
-  "domain": "https://lakehouse-useast17.auth.us-east-1.amazoncognito.com",
-  "client_secret": "slgiqslht7cdpq32gn1i6gjv9abf4tgnm116q952516fuk8av4g"
-}
-```
-
-**Creates**:
+**What it creates:**
 - User Pool with OAuth configuration
 - App client with scopes
 - Test users (user001@example.com, user002@example.com, adjuster001@example.com)
 - Password: TempPass123!
 
-**Save output values to `.env`:** `COGNITO_USER_POOL_ID`, `COGNITO_APP_CLIENT_ID`, `COGNITO_APP_CLIENT_SECRET`, `COGNITO_DOMAIN`
+**Next**: Run `04-deploy-mcp-server.ipynb`
 
-### Step 6: Deploy MCP Server on AgentCore Runtime
+---
 
-The MCP (Model Context Protocol) Server runs on AgentCore Runtime and connects the AI agent to AWS Athena. It implements the secure data access layer with Lake Formation row-level security.
+### Step 5: Deploy MCP Server
 
-**What it does**:
-- Receives tool requests from the AgentCore Gateway
-- Extracts user identity from request context
-- Assumes IAM role with session tags (user_id)
-- Executes Athena queries with Lake Formation RLS enforcement
-- Returns filtered results (only user's own data)
+**📓 Notebook**: `04-deploy-mcp-server.ipynb`
 
-**Security features**:
-- Session tag-based access control (not SQL string interpolation)
-- Lake Formation enforces row filters at query engine level
-- Zero SQL injection risk
-- Full CloudTrail audit trail
+Deploys the MCP Server to AgentCore Runtime.
 
-**Why AgentCore Runtime instead of Lambda?**
-- Native integration with AgentCore ecosystem
-- Automatic scaling and lifecycle management
-- Built-in observability and monitoring
-- Simplified deployment with `agentcore` CLI
-- Better performance for agent-to-tool communication
+**What it does:**
+- Builds Docker container with MCP server
+- Deploys to AgentCore Runtime
+- Configures Lake Formation RLS integration
+- Saves Runtime ARN to SSM
+
+**Requirements**: Docker must be installed and running
+
+**Next**: Run `05-deploy-gateway.ipynb`
+
+---
+
+### Step 6: Deploy Gateway & Interceptor
+
+**📓 Notebook**: `05-deploy-gateway.ipynb`
+
+Deploys the AgentCore Gateway and Interceptor Lambda.
+
+**What it creates:**
+- Interceptor Lambda (JWT validation)
+- AgentCore Gateway (routing and policy enforcement)
+
+**OAuth Flow**: Streamlit → Agent → Gateway → Interceptor → MCP Server → Lake Formation
+
+**Next**: Run `06-deploy-agent.ipynb`
+
+---
+
+### Step 7: Deploy Lakehouse Agent
+
+**📓 Notebook**: `06-deploy-agent.ipynb`
+
+Deploys the Lakehouse Agent to AgentCore Runtime.
+
+**What it does:**
+- Builds Docker container with agent code
+- Deploys to AgentCore Runtime
+- Configures Gateway integration
+- Saves Agent Runtime ARN to SSM
+
+**Requirements**: Docker must be installed and running
+
+**Next**: Run `07-test-deployment.ipynb`
+
+---
+
+### Step 8: Test Deployment
+
+**📓 Notebook**: `07-test-deployment.ipynb`
+
+Tests the complete lakehouse agent system end-to-end.
+
+**What it tests:**
+- OAuth token generation from Cognito
+- Agent invocation with bearer token
+- End-to-end request flow
+- CloudWatch logs verification
+
+**Next**: Run Streamlit UI for interactive testing
+
+---
+
+### Step 9: Run Streamlit UI
+
+Launch the Streamlit interface for interactive testing:
 
 ```bash
-cd ../mcp-athena-server
-
-# Ensure your .env file has all required values
-# The MCP server reads configuration from config.py/.env
-cat ../.env | grep -E "(AWS_REGION|S3_BUCKET_NAME|ATHENA_DATABASE_NAME|RLS_ROLE_ARN|SECURITY_MODE)"
-
-# Install dependencies including the starter toolkit
-pip install -r requirements.txt
-
-# Verify agentcore CLI is available
-which agentcore || echo "⚠️  agentcore CLI not found - it should be installed with bedrock-agentcore-starter-toolkit"
-
-# Deploy to AgentCore Runtime using the Python script
-# This will:
-# 1. Create IAM role with required permissions
-# 2. Build a Docker container with your MCP server
-# 3. Deploy it to AgentCore Runtime
-python deploy_runtime.py
+cd streamlit-ui
+streamlit run streamlit_app.py
 ```
 
-**Configuration Requirements**:
-The MCP server reads from your `.env` file via `config.py`. Ensure these are set:
-- `AWS_REGION`: Region where Athena database is located (e.g., us-east-1)
-- `S3_BUCKET_NAME`: Bucket for Athena query results
-- `ATHENA_DATABASE_NAME`: Glue database name (lakehouse_db)
-- `RLS_ROLE_ARN`: IAM role with Lake Formation permissions (from Step 3)
-- `SECURITY_MODE`: Must be set to "lakeformation" for production
+Open http://localhost:8501 in your browser.
 
-**Required IAM Permissions**:
-The AgentCore Runtime execution role needs:
-- `AmazonAthenaFullAccess` - Execute Athena queries
-- `AWSGlueServiceRole` - Access Glue Data Catalog
-- `AmazonS3ReadOnlyAccess` - Read data from S3
-- `sts:AssumeRole` - Assume the RLS role with session tags
-- `lakeformation:GetDataAccess` - Lake Formation data access
+**Test with different users:**
+- user001@example.com / TempPass123! (sees 4 claims)
+- user002@example.com / TempPass123! (sees 5 claims)
+- adjuster001@example.com / TempPass123!
 
-**Deployment Output**:
-After running `agentcore launch`, you'll see:
-```
-✅ MCP Server deployed successfully
-Runtime ARN: arn:aws:bedrock-agentcore:us-east-1:ACCOUNT:runtime/runtime-id
-Runtime ID: runtime-id
-```
+**Verify Row-Level Security**: Each user should see only their own claims.
 
-**Save the Runtime ARN to `.env`**:
-```bash
-MCP_SERVER_RUNTIME_ARN=arn:aws:bedrock-agentcore:us-east-1:ACCOUNT:runtime/runtime-id
-MCP_SERVER_RUNTIME_ID=runtime-id
-```
-
-
-# Test the MCP server (after Gateway is deployed)
-# Use the Gateway to invoke the MCP server tools
-```
-
-**Note**: The deployment script will output the Runtime ARN and ID. Save these to your `.env` file before proceeding to the next step.
+---
 
 ### Step 7: Deploy Gateway & Interceptor
 
 The AgentCore Gateway acts as a secure proxy between the AI agent and the MCP server. The Interceptor Lambda validates OAuth tokens and enforces scope-based access control.
 
 **What the Interceptor does**:
-- Validates JWT bearer tokens from Cognito
-- Checks token signature and expiration
-- Extracts user identity (email) from token
-- Validates OAuth scopes (claims.query, claims.submit, etc.)
-- Adds `X-User-Identity` header to requests
-- Blocks unauthorized tool access
+- Extracts JWT bearer tokens from MCP gateway request structure
+- Validates JWT tokens against Cognito (signature, expiration, audience, issuer)
+- Extracts user principal (email/username) from JWT claims
+- Adds `X-User-Identity` header to requests for downstream MCP server
+- Returns responses in proper MCP interceptor format
+- Follows AgentCore Gateway MCP protocol
 
 **What the Gateway does**:
 - Routes tool requests from agent to MCP server
+- Wraps requests in MCP structure before invoking interceptor
 - Applies interceptor for authentication/authorization
 - Enforces policy-based access control
 - Provides observability and logging
+
+**⭐ Recent Update**: The interceptor has been updated to follow the proper AgentCore Gateway MCP protocol for extracting JWT tokens and user principals. See `gateway-setup/INTERCEPTOR_UPDATE.md` for details.
+
+#### Deploy the Interceptor Lambda
 
 ```bash
 cd ../gateway-setup/interceptor
@@ -527,33 +592,41 @@ bash deploy.sh
 ```
 
 The `deploy.sh` script will:
-1. Load environment variables from `.env` file
+1. Load configuration from SSM Parameter Store via config module
 2. Create Lambda execution role (if not exists)
-3. Package Lambda function with dependencies
+3. Package Lambda function with dependencies (including python-jose for JWT validation)
 4. Create or update Lambda function with proper configuration
 
-**Environment Variables Used** (from `.env`):
-- `COGNITO_REGION`: AWS region where Cognito User Pool is located
-- `COGNITO_USER_POOL_ID`: User Pool ID from Step 5
-- `COGNITO_APP_CLIENT_ID`: App Client ID from Step 5
+**Configuration Used** (from SSM Parameter Store):
+- `lh_cognito_region`: AWS region where Cognito User Pool is located (or uses AWS_REGION)
+- `lh_cognito_user_pool_id`: User Pool ID from Step 5
+- `lh_cognito_app_client_id`: App Client ID from Step 5
 
 **Required IAM Role Permissions**:
 The Lambda execution role includes:
 - `AWSLambdaBasicExecutionRole` - CloudWatch logging
-- No additional permissions needed (validates JWT locally)
+- No additional permissions needed (validates JWT locally using Cognito public keys)
 
 **The script outputs the Interceptor Lambda ARN** - this will be used in the next step.
 
-**Create the AgentCore Gateway**:
+#### Create the AgentCore Gateway
+
 ```bash
 # Navigate back to gateway-setup directory
 cd ..
 
-# Load environment variables from .env file
-source ../.env
+# Get AWS region from session
+AWS_REGION=$(aws configure get region)
 
 # Get the Interceptor Lambda ARN
 INTERCEPTOR_ARN=$(aws lambda get-function --function-name lakehouse-gateway-interceptor --region $AWS_REGION --query 'Configuration.FunctionArn' --output text)
+
+# Get MCP Server Runtime ARN from SSM
+MCP_SERVER_RUNTIME_ARN=$(aws ssm get-parameter --name lh_mcp_server_runtime_arn --query 'Parameter.Value' --output text)
+
+# Get Cognito User Pool ARN from SSM
+COGNITO_USER_POOL_ID=$(aws ssm get-parameter --name lh_cognito_user_pool_id --query 'Parameter.Value' --output text)
+COGNITO_USER_POOL_ARN="arn:aws:cognito-idp:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):userpool/${COGNITO_USER_POOL_ID}"
 
 # Create gateway with interceptor and MCP server runtime
 python create_gateway.py \
@@ -569,29 +642,86 @@ python create_gateway.py \
 - **Interceptor**: Lambda ARN from above
 - **Auth**: Cognito User Pool ARN from Step 5
 
-**What happens when a request flows through**:
+#### OAuth Token Flow Through the System
+
+The complete OAuth token flow follows the AgentCore Gateway MCP protocol:
+
 ```
-1. Agent sends request with Bearer token
+1. Streamlit UI
+   - User authenticates with Cognito
+   - Gets OAuth2 access token (client_credentials flow)
+   - Passes token in payload: {"bearer_token": "<token>"}
    ↓
-2. Gateway invokes Interceptor Lambda
+2. Lakehouse Agent
+   - Receives bearer_token from payload
+   - Creates MCP client with Authorization header
+   - Sends to Gateway: {"Authorization": "Bearer <token>"}
    ↓
-3. Interceptor validates JWT and extracts user_id
+3. AgentCore Gateway
+   - Receives request with Authorization header
+   - Wraps in MCP structure:
+     {
+       "mcp": {
+         "gatewayRequest": {
+           "headers": {"Authorization": "Bearer <token>"},
+           "body": {...}
+         }
+       }
+     }
+   - Invokes Interceptor Lambda
    ↓
-4. Gateway adds X-User-Identity header
+4. Gateway Interceptor (⭐ UPDATED)
+   - Extracts token from event['mcp']['gatewayRequest']['headers']
+   - Validates JWT against Cognito public keys
+   - Extracts user principal (email/username) from claims
+   - Adds X-User-Identity header
+   - Returns transformed request in MCP format:
+     {
+       "interceptorOutputVersion": "1.0",
+       "mcp": {
+         "transformedGatewayRequest": {
+           "headers": {"X-User-Identity": "user@example.com"},
+           "body": {...}
+         }
+       }
+     }
    ↓
-5. Gateway invokes MCP Server Lambda
+5. Gateway → MCP Server
+   - Forwards request with X-User-Identity header
    ↓
-6. MCP Server assumes role with session tag
+6. MCP Server
+   - Extracts user principal from X-User-Identity header
+   - Assumes IAM role with session tag (user_id)
    ↓
-7. Lake Formation enforces row filter
-   ↓
-8. Results returned to agent
+7. Lake Formation
+   - Enforces row filter based on session tag
+   - Returns only user's own data
 ```
 
-**Save `GATEWAY_ARN` to `.env`**:
+**Reference Documentation**:
+- See `gateway-setup/INTERCEPTOR_UPDATE.md` for detailed changes
+- See `gateway-setup/OAUTH_FLOW_DIAGRAM.md` for visual diagrams
+- Reference: [AWS AgentCore Gateway Token Exchange](https://github.com/awslabs/amazon-bedrock-agentcore-samples/blob/main/01-tutorials/02-AgentCore-gateway/14-token-exchange-at-request-interceptor/)
+
+**Save `GATEWAY_ARN` to SSM Parameter Store**:
 ```bash
-GATEWAY_ARN=arn:aws:bedrock-agentcore:us-east-1:ACCOUNT:gateway/gateway-id
-GATEWAY_ID=gateway-id
+aws ssm put-parameter --name "lh_gateway_arn" --value "arn:aws:bedrock-agentcore:us-east-1:ACCOUNT:gateway/gateway-id" --type "String"
+aws ssm put-parameter --name "lh_gateway_id" --value "gateway-id" --type "String"
+```
+
+#### Verify Interceptor Deployment
+
+Check CloudWatch Logs to verify the interceptor is working correctly:
+
+```bash
+# Tail interceptor logs
+aws logs tail /aws/lambda/lakehouse-gateway-interceptor --follow
+
+# Look for these log messages:
+# ✅ Bearer token extracted from MCP gateway request
+# ✅ Extracted user principal: user@example.com
+# ✅ Request authorized for user: user@example.com
+# 📤 Returning transformed request
 ```
 
 ### Step 8: Deploy Lakehouse Agent
@@ -607,7 +737,7 @@ The deployment script will:
 1. Create IAM role for the agent runtime with necessary permissions (Bedrock, Gateway access, CloudWatch logs)
 2. Use the Bedrock AgentCore Starter Toolkit to build a Docker container
 3. Deploy the containerized agent to AgentCore Runtime
-4. Automatically save the runtime configuration to `.env` file
+4. Automatically save the runtime configuration to SSM Parameter Store
 
 **What happens during deployment**:
 - Docker builds a container image with your agent code and dependencies
@@ -616,7 +746,7 @@ The deployment script will:
 - Agent is ready to receive requests
 
 **Configuration saved automatically**:
-- `LAKEHOUSE_AGENT_RUNTIME_ID`: Runtime identifier
+- `lh_lakehouse_agent_runtime_id`: Runtime identifier
 - `LAKEHOUSE_AGENT_RUNTIME_ARN`: Full ARN of the runtime
 - `LAKEHOUSE_AGENT_NAME`: Agent name (lakehouse_agent)
 
@@ -647,9 +777,394 @@ Open http://localhost:8501 in your browser.
 
 ## Configuration Guide
 
-### Environment Variables
+### Configuration Management with AWS Systems Manager (SSM)
 
-All configuration is managed through a single `.env` file:
+**⚠️ IMPORTANT**: This application now uses AWS Systems Manager (SSM) Parameter Store for configuration management instead of `.env` files. This provides enhanced security, centralized configuration, and better support for production deployments.
+
+#### Why SSM Parameter Store?
+
+✅ **Enhanced Security**: Sensitive values stored as encrypted SecureString parameters
+✅ **Centralized Management**: Single source of truth for all environments
+✅ **No Local Files**: No `.env` files to manage or accidentally commit
+✅ **Audit Trail**: CloudTrail logs all parameter access
+✅ **IAM-Based Access**: Fine-grained permissions control
+✅ **Auto-Detection**: AWS_REGION and AWS_ACCOUNT_ID automatically detected
+
+#### SSM Parameter Naming Convention
+
+All lakehouse-agent parameters use the `lh_` prefix for easy identification and management:
+
+| Config Key | SSM Parameter Name | Type | Example Value |
+|------------|-------------------|------|---------------|
+| S3_BUCKET_NAME | lh_s3_bucket_name | String | insurance-processor-rba |
+| COGNITO_USER_POOL_ID | lh_cognito_user_pool_id | String | us-east-1_XXXXXXXXX |
+| COGNITO_APP_CLIENT_SECRET | lh_cognito_app_client_secret | SecureString | (encrypted) |
+| RLS_ROLE_ARN | lh_rls_role_arn | String | arn:aws:iam::... |
+| GATEWAY_ARN | lh_gateway_arn | String | arn:aws:bedrock-agentcore:... |
+
+**Naming Rules**:
+- All parameters start with `lh_` prefix
+- Config keys converted to lowercase
+- Underscores preserved
+- Example: `COGNITO_USER_POOL_ID` → `lh_cognito_user_pool_id`
+
+**Special Cases** (Auto-Detected, NOT stored in SSM):
+- `AWS_REGION`: Retrieved from boto3 session (respects AWS_DEFAULT_REGION environment variable)
+- `AWS_ACCOUNT_ID`: Retrieved from STS GetCallerIdentity API call
+
+#### Setting SSM Parameters
+
+**Using AWS CLI**:
+```bash
+# Set a regular parameter
+aws ssm put-parameter \
+  --name "lh_s3_bucket_name" \
+  --value "insurance-processor-rba" \
+  --type "String" \
+  --description "S3 bucket for lakehouse data"
+
+# Set a sensitive parameter (encrypted)
+aws ssm put-parameter \
+  --name "lh_cognito_app_client_secret" \
+  --value "your-secret-here" \
+  --type "SecureString" \
+  --description "Cognito app client secret"
+
+# Update an existing parameter
+aws ssm put-parameter \
+  --name "lh_gateway_arn" \
+  --value "arn:aws:bedrock-agentcore:us-east-1:XXXXXXXXXXXX:gateway/abc123" \
+  --type "String" \
+  --overwrite
+```
+
+**Using AWS Console**:
+1. Navigate to AWS Systems Manager → Parameter Store
+2. Click "Create parameter"
+3. Name: `lh_s3_bucket_name` (must start with `lh_`)
+4. Type: `String` or `SecureString` (for sensitive values)
+5. Value: Your configuration value
+6. Click "Create parameter"
+
+#### Migration from .env to SSM
+
+If you have an existing `.env` file, use the migration utility to transfer values to SSM:
+
+```bash
+# Preview what will be migrated (dry-run)
+python ssm_migrate.py migrate --env-file .env --dry-run
+
+# Migrate all parameters to SSM
+python ssm_migrate.py migrate --env-file .env
+
+# Force overwrite existing parameters (use with caution)
+python ssm_migrate.py migrate --env-file .env --force
+```
+
+**Migration Process**:
+1. Reads all KEY=VALUE pairs from `.env` file
+2. Converts keys to SSM parameter names (adds `lh_` prefix, lowercase)
+3. Detects sensitive parameters (SECRET, PASSWORD, KEY in name)
+4. Creates SecureString for sensitive values, String for others
+5. Skips AWS_REGION and AWS_ACCOUNT_ID (auto-detected)
+6. Prompts before overwriting existing parameters (unless --force)
+7. Displays summary of created/updated/skipped parameters
+
+**Example Output**:
+```
+🔄 Migrating .env to SSM Parameter Store...
+
+✅ Created lh_s3_bucket_name (String)
+✅ Created lh_cognito_user_pool_id (String)
+✅ Created lh_cognito_app_client_secret (SecureString)
+⏭️  Skipped lh_gateway_arn (already exists, use --force to overwrite)
+⏭️  Skipped AWS_REGION (auto-detected from boto3 session)
+⏭️  Skipped AWS_ACCOUNT_ID (auto-detected from STS)
+
+📊 Migration Summary:
+   Created: 15 parameters
+   Updated: 0 parameters
+   Skipped: 3 parameters
+   Failed: 0 parameters
+```
+
+#### Exporting SSM Parameters (Backup)
+
+Export current SSM parameters to a file for backup or documentation:
+
+```bash
+# Export to file (sensitive values masked)
+python ssm_migrate.py export --output backup.env
+
+# Export with decrypted secrets (use with caution)
+python ssm_migrate.py export --output backup.env --include-secrets
+```
+
+#### Validating SSM Configuration
+
+Check that all required parameters are set in SSM:
+
+```bash
+# Validate all required parameters exist
+python ssm_migrate.py validate
+
+# Verbose output with parameter details
+python ssm_migrate.py validate --verbose
+```
+
+**Example Output**:
+```
+✅ Validating SSM parameters...
+
+✅ lh_s3_bucket_name: insurance-processor-rba
+✅ lh_cognito_user_pool_id: us-east-1_XXXXXXXXX
+✅ lh_cognito_app_client_secret: ****** (SecureString)
+✅ lh_rls_role_arn: arn:aws:iam::XXXXXXXXXXXX:role/lakehouse-rls-role
+❌ lh_gateway_arn: NOT FOUND
+
+⚠️  Missing 1 required parameter(s)
+```
+
+#### Required IAM Permissions
+
+**📁 Pre-built Policy Templates Available**: See `iam-policies/` directory for ready-to-use JSON policy files.
+
+**For Application Runtime** (read-only access):
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/lh_*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt"],
+      "Resource": "arn:aws:kms:*:*:key/*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.*.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["sts:GetCallerIdentity"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**For Migration/Management** (read-write access):
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:GetParametersByPath",
+        "ssm:DescribeParameters"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/lh_*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt"],
+      "Resource": "arn:aws:kms:*:*:key/*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.*.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["sts:GetCallerIdentity"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Attaching Policies**:
+```bash
+# Create policy from JSON file
+aws iam create-policy \
+  --policy-name LakehouseSSMReadPolicy \
+  --policy-document file://iam-policies/lakehouse-ssm-read-policy.json
+
+# Attach to role
+aws iam attach-role-policy \
+  --role-name YourLambdaExecutionRole \
+  --policy-arn arn:aws:iam::XXXXXXXXXXXX:policy/LakehouseSSMReadPolicy
+```
+
+**📖 Detailed Instructions**: See `iam-policies/README.md` for:
+- Step-by-step policy creation
+- Policy customization options
+- Testing and troubleshooting
+- Security best practices
+
+#### AWS Region and Account ID Auto-Detection
+
+The application automatically detects AWS_REGION and AWS_ACCOUNT_ID:
+
+**AWS_REGION Detection**:
+1. Checks boto3 session default region
+2. Falls back to AWS_DEFAULT_REGION environment variable
+3. Falls back to us-east-1 if not set
+
+**AWS_ACCOUNT_ID Detection**:
+1. Calls STS GetCallerIdentity API
+2. Extracts account ID from response
+3. Caches for session lifetime
+
+**Benefits**:
+- No need to store these values in SSM
+- Automatically works across different AWS accounts
+- Simplifies multi-account deployments
+- Reduces configuration errors
+
+**Usage in Code**:
+```python
+from config import config
+
+# These are auto-detected
+region = config.AWS_REGION        # From boto3 session
+account_id = config.AWS_ACCOUNT_ID  # From STS
+
+# ARNs with substitution work automatically
+role_arn = config.RLS_ROLE_ARN  # arn:aws:iam::${AWS_ACCOUNT_ID}:role/...
+# Becomes: arn:aws:iam::XXXXXXXXXXXX:role/...
+```
+
+#### Troubleshooting SSM Configuration
+
+**Issue: "SSM Parameter Store unavailable: AccessDeniedException"**
+
+**Cause**: Insufficient IAM permissions
+
+**Solution**:
+1. Check your AWS credentials: `aws sts get-caller-identity`
+2. Verify IAM permissions include `ssm:GetParameter` and `ssm:GetParametersByPath`
+3. For SecureString parameters, ensure `kms:Decrypt` permission
+4. Attach the appropriate IAM policy (see Required IAM Permissions above)
+
+---
+
+**Issue: "Missing required configuration parameters"**
+
+**Cause**: Required parameters not set in SSM
+
+**Solution**:
+1. Run validation: `python ssm_migrate.py validate`
+2. Check which parameters are missing
+3. Set missing parameters using AWS CLI or Console
+4. Verify parameter names start with `lh_` prefix
+
+---
+
+**Issue: "Cannot decrypt SecureString parameter"**
+
+**Cause**: Missing KMS decrypt permission
+
+**Solution**:
+1. Add KMS decrypt permission to IAM role
+2. Ensure condition allows SSM service: `"kms:ViaService": "ssm.*.amazonaws.com"`
+3. Verify KMS key policy allows your role to decrypt
+
+---
+
+**Issue: "Parameter not found: lh_gateway_arn"**
+
+**Cause**: Parameter name mismatch or not created
+
+**Solution**:
+1. List all lh_* parameters: `aws ssm get-parameters-by-path --path /lh_ --recursive`
+2. Check parameter name matches convention (lowercase, lh_ prefix)
+3. Create missing parameter: `aws ssm put-parameter --name lh_gateway_arn --value "..." --type String`
+
+---
+
+**Issue: "Region detection failed"**
+
+**Cause**: No default region configured
+
+**Solution**:
+1. Set AWS_DEFAULT_REGION environment variable: `export AWS_DEFAULT_REGION=us-east-1`
+2. Or configure AWS CLI: `aws configure set region us-east-1`
+3. Or pass region explicitly when creating boto3 session
+
+---
+
+**Issue: "Account ID detection failed"**
+
+**Cause**: STS GetCallerIdentity permission denied
+
+**Solution**:
+1. Add STS permission to IAM role: `"sts:GetCallerIdentity"`
+2. Verify AWS credentials are valid: `aws sts get-caller-identity`
+3. Check network connectivity to STS endpoint
+
+---
+
+**Issue: "Migration utility fails with 'Rate exceeded'"**
+
+**Cause**: AWS API rate limits
+
+**Solution**:
+1. The utility automatically retries with exponential backoff
+2. For large migrations, use smaller batches
+3. Wait a few minutes and retry
+
+---
+
+**Issue: "Parameter exists but shows as missing"**
+
+**Cause**: Parameter name case mismatch
+
+**Solution**:
+1. SSM parameter names are case-sensitive
+2. Ensure all parameters use lowercase: `lh_s3_bucket_name` not `lh_S3_BUCKET_NAME`
+3. Delete incorrect parameter and recreate with correct name
+
+---
+
+**Debug Commands**:
+```bash
+# List all lakehouse parameters
+aws ssm get-parameters-by-path --path / --recursive | grep "lh_"
+
+# Get specific parameter
+aws ssm get-parameter --name lh_s3_bucket_name
+
+# Get parameter with decryption
+aws ssm get-parameter --name lh_cognito_app_client_secret --with-decryption
+
+# Check IAM permissions
+aws iam get-role-policy --role-name YourRole --policy-name YourPolicy
+
+# Test STS access
+aws sts get-caller-identity
+
+# View CloudWatch logs for SSM access
+aws logs tail /aws/lambda/your-function --follow | grep SSM
+```
+
+### Environment Variables (Legacy - For Reference Only)
+
+**⚠️ DEPRECATED**: The application no longer uses `.env` files. This section is kept for reference only.
+
+All configuration is now managed through SSM Parameter Store (see above):
 
 ```bash
 # ========================================
@@ -834,12 +1349,12 @@ cd streamlit-ui
 streamlit run streamlit_app.py
 ```
 
-Configuration (values from `.env`):
-- **Cognito Domain**: `https://lakehouse-useast17.auth.us-east-1.amazoncognito.com`
-- **Client ID**: `m41n4ln1nfs1ikhrm9j3m8tbd`
-- **Client Secret**: (from `.env` file)
+Configuration (values from SSM Parameter Store):
+- **Cognito Domain**: Retrieved from `lh_cognito_domain`
+- **Client ID**: Retrieved from `lh_cognito_app_client_id`
+- **Client Secret**: Retrieved from `lh_cognito_app_client_secret`
 - **Scope**: `lakehouse-api/claims.query`
-- **Runtime ARN**: `arn:aws:bedrock-agentcore:us-east-1:XXXXXXXXXXXX:runtime/lakehouse_agent-Hhb3lX6y7M`
+- **Runtime ARN**: Retrieved from `lh_lakehouse_agent_runtime_arn`
 
 Test queries:
 - "Show me all my claims"
@@ -1014,12 +1529,84 @@ By Type:
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | **Bearer token required** | No token in request | Ensure Streamlit UI passes bearer token |
-| **Invalid token signature** | Wrong Cognito configuration | Check COGNITO_USER_POOL_ID in .env |
+| **Invalid token signature** | Wrong Cognito configuration | Check lh_cognito_user_pool_id in SSM Parameter Store |
 | **User sees all claims** | Lake Formation not enabled | Run `setup_lake_formation.py` |
 | **No claims returned** | Wrong user_id in session tag | Check X-User-Identity header propagation |
 | **Athena permission denied** | Missing IAM permissions | Check Lambda execution role has Athena access |
 | **Gateway timeout** | MCP server timeout | Increase Lambda timeout to 300s |
-| **Configuration invalid** | Missing .env values | Run `python config.py --show` to see what's missing |
+| **Configuration invalid** | Missing SSM parameters | Run `python ssm_migrate.py validate` to see what's missing |
+| **Interceptor error: "Bearer token not found"** | MCP structure issue | Ensure interceptor extracts from event['mcp']['gatewayRequest'] |
+| **JWT validation failed** | Token expired or invalid | Check token expiration and Cognito configuration |
+
+### Interceptor Troubleshooting
+
+**Issue: "Bearer token not found in MCP gateway request headers"**
+
+**Cause**: Interceptor not extracting token from correct MCP structure
+
+**Solution**:
+1. Verify interceptor is using updated code (see `gateway-setup/INTERCEPTOR_UPDATE.md`)
+2. Check that token is in Authorization header: `{"Authorization": "Bearer <token>"}`
+3. Verify Gateway is wrapping request in MCP structure
+4. Check CloudWatch logs for event structure
+
+**Expected log output**:
+```
+✅ Bearer token extracted from MCP gateway request
+✅ Extracted user principal: user@example.com
+✅ Request authorized for user: user@example.com
+```
+
+---
+
+**Issue: "Invalid or expired JWT token"**
+
+**Cause**: Token validation failed
+
+**Solution**:
+1. Check token expiration (Cognito tokens typically expire after 1 hour)
+2. Verify Cognito User Pool ID matches in interceptor environment variables
+3. Verify App Client ID matches
+4. Check Cognito public keys are accessible from Lambda
+5. Test token manually: `python gateway-setup/interceptor/test_jwt.py`
+
+---
+
+**Issue: "User principal not found in token claims"**
+
+**Cause**: JWT doesn't contain expected claims
+
+**Solution**:
+1. Check JWT claims structure: Decode token at jwt.io
+2. Verify token contains one of: email, username, cognito:username, or sub
+3. For client_credentials flow, ensure custom claims are configured
+4. Check Cognito Pre Token Generation Lambda (if using custom claims)
+
+---
+
+**Issue: "Interceptor returns 500 Internal Server Error"**
+
+**Cause**: Unhandled exception in interceptor
+
+**Solution**:
+1. Check CloudWatch logs: `aws logs tail /aws/lambda/lakehouse-gateway-interceptor --follow`
+2. Look for stack traces in logs
+3. Verify python-jose library is included in deployment package
+4. Check Lambda has internet access to fetch Cognito public keys
+5. Redeploy interceptor: `cd gateway-setup/interceptor && bash deploy.sh`
+
+---
+
+**Issue: "MCP server doesn't receive X-User-Identity header"**
+
+**Cause**: Interceptor not adding header or Gateway not forwarding
+
+**Solution**:
+1. Check interceptor logs for "Returning transformed request"
+2. Verify interceptor returns proper MCP format with transformedGatewayRequest
+3. Check MCP server logs for incoming headers
+4. Verify Gateway configuration includes interceptor
+5. Test with manual invocation to isolate issue
 
 ### Debug Commands
 
@@ -1068,9 +1655,13 @@ aws logs tail /aws/athena/query-logs --follow
 lakehouse-processor/
 │
 ├── 📋 Configuration
-│   ├── .env.example                     # Configuration template
-│   ├── .env                            # Your config (gitignored)
-│   └── config.py                       # Configuration loader
+│   ├── config.py                       # Configuration loader (SSM-based)
+│   ├── ssm_config.py                   # SSM Parameter Store loader
+│   ├── ssm_migrate.py                  # Migration utility (.env → SSM)
+│   └── iam-policies/                   # IAM policy templates
+│       ├── README.md                   # Policy usage guide
+│       ├── lakehouse-ssm-read-policy.json    # Read-only access
+│       └── lakehouse-ssm-admin-policy.json   # Admin access
 │
 ├── 🗄️ Data Layer
 │   └── athena-setup/
@@ -1265,4 +1856,47 @@ This project is licensed under the Apache License 2.0 - see the LICENSE file for
 **Status**: Production-Ready ✅
 **Security**: Enterprise-Grade with Lake Formation
 **Governance**: SageMaker Unified Studio Integrated
-**Last Updated**: January 2025
+**Last Updated**: December 2024
+
+## Recent Updates
+
+### December 2024 - Gateway Interceptor MCP Protocol Compliance
+
+**⭐ Major Update**: Updated the Gateway Interceptor to follow the proper AgentCore Gateway MCP (Model Context Protocol) structure for extracting JWT tokens and user principals.
+
+**What Changed**:
+- Interceptor now correctly extracts tokens from `event['mcp']['gatewayRequest']` structure
+- Returns responses in proper MCP format with `interceptorOutputVersion` and `transformedGatewayRequest`
+- Improved JWT validation and principal extraction
+- Enhanced logging and error handling
+
+**Why This Matters**:
+- Ensures compatibility with AgentCore Gateway protocol
+- Proper OAuth token flow from Streamlit → Agent → Gateway → MCP Server
+- Better security and observability
+
+**Documentation**:
+- See `gateway-setup/INTERCEPTOR_UPDATE.md` for detailed changes
+- See `gateway-setup/OAUTH_FLOW_DIAGRAM.md` for visual flow diagrams
+- Reference: [AWS AgentCore Gateway Samples](https://github.com/awslabs/amazon-bedrock-agentcore-samples)
+
+**Migration**: If you have an existing deployment, redeploy the interceptor:
+```bash
+cd gateway-setup/interceptor
+bash deploy.sh
+```
+
+### December 2024 - SSM Parameter Store Migration
+
+**⭐ Major Update**: Migrated from `.env` file-based configuration to AWS Systems Manager (SSM) Parameter Store.
+
+**Benefits**:
+- Enhanced security with encrypted SecureString parameters
+- Centralized configuration management
+- No local files to manage or accidentally commit
+- Full CloudTrail audit trail
+- IAM-based access control
+- Auto-detection of AWS_REGION and AWS_ACCOUNT_ID
+
+**Migration Tool**: Use `ssm_migrate.py` to migrate existing `.env` files to SSM
+**Documentation**: See Configuration Guide section above for details

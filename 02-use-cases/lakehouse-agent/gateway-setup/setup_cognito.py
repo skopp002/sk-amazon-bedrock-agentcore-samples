@@ -2,7 +2,7 @@
 """
 Cognito Setup for Health Lakehouse Data
 Creates User Pool, App Client, Resource Server, and test users with OAuth scopes
-Writes configuration to .env file
+Writes configuration to SSM Parameter Store
 """
 import boto3
 import argparse
@@ -63,7 +63,16 @@ class CognitoSetup:
         return None
 
     def write_to_env(self, config: Dict):
-        """Write configuration to .env file."""
+        """
+        Write configuration to .env file.
+        
+        Note: This function is deprecated and will be removed in a future version.
+        Configuration should be managed through SSM Parameter Store.
+        This is kept temporarily for backward compatibility during migration.
+        """
+        print(f"⚠️  Warning: .env file updates are deprecated. Please migrate to SSM Parameter Store.")
+        print(f"   Run: python ../ssm_migrate.py --migrate")
+        
         try:
             # Read existing .env file
             env_content = {}
@@ -93,7 +102,7 @@ class CognitoSetup:
                 for key, value in sorted(env_content.items()):
                     f.write(f"{key}={value}\n")
             
-            print(f"\n✅ Configuration written to {self.env_file}")
+            print(f"\n✅ Configuration written to {self.env_file} (for backward compatibility)")
             
         except Exception as e:
             print(f"❌ Error writing to .env file: {e}")
@@ -236,7 +245,7 @@ class CognitoSetup:
         if 'client_secret' in locals() and client_secret:
             result['client_secret'] = client_secret
         
-        # Write to .env file
+        # Write to .env file (deprecated, for backward compatibility)
         self.write_to_env(result)
         
         return result

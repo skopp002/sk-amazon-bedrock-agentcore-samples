@@ -3,10 +3,10 @@
 Athena Setup Script - Using Centralized Configuration
 
 This is the updated version that reads from config.py instead of command-line arguments.
-All configuration is managed through the .env file.
+All configuration is managed through SSM Parameter Store.
 
 Usage:
-    # Setup .env file first with S3_BUCKET_NAME
+    # Setup SSM parameters first with S3_BUCKET_NAME
     python setup_athena_with_config.py
 
     # Or use command-line args to override
@@ -28,7 +28,7 @@ from setup_athena import AthenaSetup
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Setup Athena with configuration from .env file'
+        description='Setup Athena with configuration from SSM Parameter Store'
     )
     # Optional overrides
     parser.add_argument(
@@ -49,7 +49,7 @@ def main():
     if not config.is_valid():
         print("\n❌ Configuration is invalid!")
         config.print_status()
-        print("\n📝 Please update your .env file with required values.")
+        print("\n📝 Please update your SSM parameters with required values.")
         print("   See CONFIGURATION_GUIDE.md for details.")
         sys.exit(1)
 

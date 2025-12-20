@@ -10,7 +10,7 @@ Prerequisites:
 - AWS credentials configured
 - Docker running
 - Lake Formation RLS configured (run setup_lake_formation.py)
-- Configuration in .env file
+- Configuration in SSM Parameter Store
 - bedrock-agentcore-starter-toolkit installed
 
 Usage:
@@ -198,7 +198,7 @@ def deploy_to_runtime(role_arn):
         # Extract role name from ARN (format: arn:aws:iam::account:role/RoleName)
         role_name = role_arn.split('/')[-1]
         
-        # Note: Environment variables are read from config.py/.env file by the MCP server
+        # Note: Environment variables are read from config.py/SSM Parameter Store by the MCP server
         # The starter toolkit will package the entire directory including config files
         agentcore_runtime.configure(
             entrypoint="server.py",
@@ -248,7 +248,7 @@ def main():
     if not config.is_valid():
         print("\n❌ Configuration is invalid!")
         config.print_status()
-        print("\n📝 Please update your .env file.")
+        print("\n📝 Please update your SSM parameters.")
         sys.exit(1)
     
     if not config.RLS_ROLE_ARN:
@@ -293,12 +293,12 @@ def main():
         print("Deployment Complete!")
         print("=" * 70)
         
-        print("\n📝 Add these values to your .env file:\n")
-        print(f"MCP_SERVER_RUNTIME_ARN={result['runtime_arn']}")
-        print(f"MCP_SERVER_RUNTIME_ID={result['runtime_id']}")
+        print("\n📝 Add these values to SSM Parameter Store:\n")
+        print(f"aws ssm put-parameter --name lh_mcp_server_runtime_arn --value '{result['runtime_arn']}' --type String --overwrite")
+        print(f"aws ssm put-parameter --name lh_mcp_server_runtime_id --value '{result['runtime_id']}' --type String --overwrite")
         
         print("\n🔗 Next Steps:")
-        print("   1. Update your .env file with the values above")
+        print("   1. Update SSM Parameter Store with the values above")
         print("   2. Deploy the Gateway and Interceptor (Step 7)")
         print("   3. Deploy the Lakehouse Agent (Step 8)")
         print("   4. Test the system end-to-end")

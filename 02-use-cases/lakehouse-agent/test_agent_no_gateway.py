@@ -2,23 +2,19 @@
 """
 Simple test of agent runtime WITHOUT gateway tools - just basic conversation
 """
-import os
 import json
 import uuid
 import requests
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+from config import config
 
 def get_cognito_token():
     """Get Cognito bearer token using client_credentials flow"""
     print("🔑 Getting Cognito bearer token...")
     
-    cognito_domain = os.getenv('COGNITO_DOMAIN')
-    client_id = os.getenv('COGNITO_APP_CLIENT_ID')
-    client_secret = os.getenv('COGNITO_APP_CLIENT_SECRET')
-    scope = os.getenv('COGNITO_SCOPE_QUERY', 'lakehouse-api/claims.query')
+    cognito_domain = config.COGNITO_DOMAIN
+    client_id = config.COGNITO_APP_CLIENT_ID
+    client_secret = config.COGNITO_APP_CLIENT_SECRET
+    scope = config.COGNITO_SCOPE_QUERY
     
     # Fix scope format: replace slashes with dots
     scope = scope.replace('/claims/', '/claims.')
@@ -47,8 +43,8 @@ def test_agent_no_gateway():
     print("🧪 Testing Agent Runtime (No Gateway)")
     print("=" * 60)
     
-    runtime_arn = os.getenv('LAKEHOUSE_AGENT_RUNTIME_ARN')
-    region = os.getenv('AWS_REGION', 'us-east-1')
+    runtime_arn = config.RUNTIME_ARN
+    region = config.AWS_REGION
     
     print(f"\nRuntime ARN: {runtime_arn}")
     print(f"Region: {region}")

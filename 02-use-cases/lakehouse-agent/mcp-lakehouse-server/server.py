@@ -14,7 +14,7 @@ IMPORTANT: This server ONLY supports Lake Formation security mode.
 Application-level SQL filtering has been removed for security reasons.
 
 Configuration:
-- Reads from config.py/.env file
+- Reads from config.py/SSM Parameter Store
 - Requires SECURITY_MODE=lakeformation
 - Requires RLS_ROLE_ARN to be set
 """
@@ -66,7 +66,8 @@ def get_athena_tools():
                 "❌ RLS_ROLE_ARN not set in configuration.\n"
                 "   Lake Formation is required for production security.\n"
                 "   Run: python athena-setup/setup_lake_formation.py\n"
-                "   Then add RLS_ROLE_ARN to your .env file."
+                "   Then add RLS_ROLE_ARN to SSM Parameter Store:\n"
+                "   aws ssm put-parameter --name lh_rls_role_arn --value 'arn:aws:iam::ACCOUNT:role/ROLE_NAME' --type String"
             )
 
         logger.info(f"  RLS Role: {config.RLS_ROLE_ARN}")
@@ -207,8 +208,8 @@ if __name__ == "__main__":
     if config.SECURITY_MODE != 'lakeformation':
         print("\n❌ Error: Only Lake Formation security mode is supported!")
         print(f"   Current SECURITY_MODE: {config.SECURITY_MODE}")
-        print(f"\n📝 Please update your .env file:")
-        print(f"   SECURITY_MODE=lakeformation")
+        print(f"\n📝 Please update SSM Parameter Store:")
+        print(f"   aws ssm put-parameter --name lh_security_mode --value 'lakeformation' --type String --overwrite")
         print(f"\n   Application-level SQL filtering has been removed for security reasons.")
         print(f"   See SECURITY_BEST_PRACTICES.md for details.")
         sys.exit(1)
@@ -216,7 +217,7 @@ if __name__ == "__main__":
     if not config.is_valid():
         print("\n❌ Configuration is invalid!")
         config.print_status()
-        print("\n📝 Please update your .env file.")
+        print("\n📝 Please update your SSM parameters.")
         print("   See CONFIGURATION_GUIDE.md for details.")
         sys.exit(1)
 
@@ -226,7 +227,8 @@ if __name__ == "__main__":
         print("\n📝 Setup Lake Formation:")
         print("   cd athena-setup")
         print("   python setup_lake_formation.py")
-        print("\n   Then add RLS_ROLE_ARN to your .env file")
+        print("\n   Then add RLS_ROLE_ARN to SSM Parameter Store:")
+        print("   aws ssm put-parameter --name lh_rls_role_arn --value 'arn:aws:iam::ACCOUNT:role/ROLE_NAME' --type String")
         sys.exit(1)
 
     print("✅ Configuration validated")

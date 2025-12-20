@@ -19,7 +19,7 @@ Prerequisites:
 Usage:
     python setup_sagemaker_unified_studio.py
 
-Outputs ARNs to update in .env:
+Outputs ARNs to update in SSM Parameter Store:
 - DATAZONE_DOMAIN_ID
 - DATAZONE_PROJECT_ID
 - DATAZONE_ENVIRONMENT_ID
@@ -443,7 +443,7 @@ class SageMakerUnifiedStudioSetup:
     def print_summary(self, domain_id: str, project_id: str, env_id: Optional[str],
                      source_id: Optional[str], glossary_terms: Dict[str, str]):
         """
-        Print setup summary with values to add to .env file.
+        Print setup summary with values to add to SSM Parameter Store.
 
         Args:
             domain_id: DataZone domain ID
@@ -456,14 +456,14 @@ class SageMakerUnifiedStudioSetup:
         print("SageMaker Unified Studio Setup Complete!")
         print("=" * 70)
 
-        print("\n📋 Add these values to your .env file:\n")
-        print(f"DATAZONE_DOMAIN_ID={domain_id}")
-        print(f"DATAZONE_PROJECT_ID={project_id}")
+        print("\n📋 Add these values to SSM Parameter Store:\n")
+        print(f"aws ssm put-parameter --name lh_datazone_domain_id --value '{domain_id}' --type String --overwrite")
+        print(f"aws ssm put-parameter --name lh_datazone_project_id --value '{project_id}' --type String --overwrite")
         if env_id:
-            print(f"DATAZONE_ENVIRONMENT_ID={env_id}")
+            print(f"aws ssm put-parameter --name lh_datazone_environment_id --value '{env_id}' --type String --overwrite")
         if source_id:
-            print(f"DATAZONE_DATA_SOURCE_ID={source_id}")
-        print(f"ENABLE_DATAZONE_INTEGRATION=true")
+            print(f"aws ssm put-parameter --name lh_datazone_data_source_id --value '{source_id}' --type String --overwrite")
+        print(f"aws ssm put-parameter --name lh_enable_datazone_integration --value 'true' --type String --overwrite")
 
         print("\n🔗 Access SageMaker Unified Studio:")
         print(f"https://console.aws.amazon.com/datazone/home?region={self.region}#/domains/{domain_id}")
@@ -478,7 +478,7 @@ class SageMakerUnifiedStudioSetup:
         print(f"   • Glossary Terms: {len(glossary_terms)}")
 
         print("\n📚 Next Steps:")
-        print("   1. Update your .env file with the values above")
+        print("   1. Update SSM Parameter Store with the values above")
         print("   2. Run: python config.py --validate")
         print("   3. Access SageMaker Unified Studio console to:")
         print("      - Configure data lineage")
@@ -499,9 +499,9 @@ def main():
     # Validate configuration
     if not config.AWS_ACCOUNT_ID or not config.S3_BUCKET_NAME:
         print("\n❌ Error: Missing required configuration")
-        print("   Please ensure .env file has:")
-        print("   - AWS_ACCOUNT_ID")
-        print("   - S3_BUCKET_NAME")
+        print("   Please ensure SSM Parameter Store has:")
+        print("   - lh_aws_account_id (auto-detected from STS)")
+        print("   - lh_s3_bucket_name")
         print("   - ATHENA_DATABASE_NAME")
         sys.exit(1)
 

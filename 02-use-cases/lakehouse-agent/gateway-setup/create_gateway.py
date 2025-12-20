@@ -23,7 +23,12 @@ import sys
 import json
 import os
 from typing import Dict, Any
-from dotenv import load_dotenv
+from pathlib import Path
+
+# Add parent directory to path to import config
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from config import config
 
 class GatewaySetup:
     def __init__(self, region: str):
@@ -348,10 +353,17 @@ def write_to_env_file(env_path: str, updates: Dict[str, str]) -> None:
     """
     Write or update values in the .env file.
     
+    Note: This function is deprecated and will be removed in a future version.
+    Configuration should be managed through SSM Parameter Store.
+    This is kept temporarily for backward compatibility during migration.
+    
     Args:
         env_path: Path to the .env file
         updates: Dictionary of key-value pairs to write/update
     """
+    print(f"⚠️  Warning: .env file updates are deprecated. Please migrate to SSM Parameter Store.")
+    print(f"   Run: python ../ssm_migrate.py --migrate")
+    
     # Read existing content
     existing_lines = []
     existing_keys = set()
@@ -395,7 +407,7 @@ def write_to_env_file(env_path: str, updates: Dict[str, str]) -> None:
     with open(env_path, 'w') as f:
         f.writelines(updated_lines)
     
-    print(f"✅ Updated .env file with gateway configuration")
+    print(f"✅ Updated .env file with gateway configuration (for backward compatibility)")
 
 
 def get_runtime_url(runtime_arn: str, region: str) -> str:
@@ -467,18 +479,12 @@ def main():
 
     args = parser.parse_args()
 
-    # Load environment variables from .env file
-    env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-    if os.path.exists(env_path):
-        load_dotenv(env_path)
-        print(f"📄 Loaded environment variables from .env")
-    
-    # Get client ID from args or environment
-    client_id = args.client_id or os.getenv('COGNITO_APP_CLIENT_ID')
+    # Get client ID from args or config
+    client_id = args.client_id or config.COGNITO_APP_CLIENT_ID
     
     if not client_id:
         print("❌ Error: Cognito App Client ID is required")
-        print("   Provide it via --client-id argument or set COGNITO_APP_CLIENT_ID in .env file")
+        print("   Provide it via --client-id argument or set in SSM Parameter Store (lh_cognito_app_client_id)")
         sys.exit(1)
 
     # Create gateway setup instance
@@ -521,7 +527,8 @@ def main():
             print(f"\n⚠️  Gateway not active yet. You can create the target later by running:")
             print(f"   python create_gateway.py --add-target --gateway-id {gateway_response['gatewayId']} --runtime-arn {args.mcp_server_arn}")
 
-        # Write configuration to .env file
+        # Write configuration to .env file (deprecated, for backward compatibility)
+        env_path = str(Path(__file__).parent.parent / '.env')
         env_updates = {
             'GATEWAY_ID': gateway_response['gatewayId'],
             'GATEWAY_ARN': gateway_response['gatewayArn'],
@@ -529,14 +536,15 @@ def main():
             'GATEWAY_NAME': args.gateway_name
         }
         
-        write_to_env_file(env_path, env_updates)
+        if Path(env_path).exists():
+            write_to_env_file(env_path, env_updates)
         
         print(f"\n✨ Gateway setup complete!")
-        print(f"\n📝 Configuration saved to .env file:")
-        print(f"   GATEWAY_ID={gateway_response['gatewayId']}")
-        print(f"   GATEWAY_ARN={gateway_response['gatewayArn']}")
-        print(f"   GATEWAY_URL={gateway_response['gatewayUrl']}")
-        print(f"   GATEWAY_NAME={args.gateway_name}")
+        print(f"\n📝 Add these values to SSM Parameter Store:")
+        print(f"   aws ssm put-parameter --name lh_gateway_id --value '{gateway_response['gatewayId']}' --type String --overwrite")
+        print(f"   aws ssm put-parameter --name lh_gateway_arn --value '{gateway_response['gatewayArn']}' --type String --overwrite")
+        print(f"   aws ssm put-parameter --name lh_gateway_url --value '{gateway_response['gatewayUrl']}' --type String --overwrite")
+        print(f"   aws ssm put-parameter --name lh_gateway_name --value '{args.gateway_name}' --type String --overwrite")
 
 
 if __name__ == '__main__':

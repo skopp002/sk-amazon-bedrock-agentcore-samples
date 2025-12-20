@@ -4,7 +4,9 @@ Health Lakehouse Data Agent using Strands and AgentCore Gateway
 Connects to Gateway tools for querying and managing lakehouse data with OAuth-based access control
 """
 import os
+import sys
 import logging
+from pathlib import Path
 from strands import Agent
 from strands.models import BedrockModel
 from strands.tools.mcp import MCPClient
@@ -12,6 +14,10 @@ from mcp.client.streamable_http import streamablehttp_client
 from bedrock_agentcore import BedrockAgentCoreApp
 from typing import Dict, Any
 import boto3
+
+# Add parent directory to path to import config
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import config
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -39,9 +45,9 @@ Be professional, empathetic, and clear. Explain insurance terms in simple langua
 When helping with claims, gather all necessary information before submission.
 """
 
-# Gateway configuration (from environment)
-GATEWAY_ARN = os.environ.get('GATEWAY_ARN', '')
-AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+# Gateway configuration (from SSM via config module)
+GATEWAY_ARN = config.GATEWAY_ARN or ''
+AWS_REGION = config.AWS_REGION
 MODEL_ID = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 

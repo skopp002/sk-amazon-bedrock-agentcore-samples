@@ -14,103 +14,180 @@ IMPORTANT: This server ONLY supports Lake Formation security mode.
 Application-level SQL filtering has been removed for security reasons.
 
 Configuration:
-- Reads from config.py/SSM Parameter Store
+- Reads from SSM Parameter Store
+- Auto-detects region from boto3 session
 - Requires SECURITY_MODE=lakeformation
 - Requires RLS_ROLE_ARN to be set
 """
 
 import sys
-from pathlib import Path
+import os
+from typing import Any, Dict, Optional
+import boto3
+from mcp.server.fastmcp import FastMCP
 
-# Add parent directory to path to import config
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from config import config
-import logging
-from typing import Any, Dict
-from bedrock_agentcore import BedrockAgentCoreApp
+# Initialize MCP server
+mcp = FastMCP(host="0.0.0.0", stateless_http=True)
 
 # PRODUCTION ONLY: Use Lake Formation row-level security
 from athena_tools_secure import SecureAthenaClaimsTools as AthenaTools
 
-print(f"🔒 Using Lake Formation row-level security (production mode)")
-
-# Configure logging
-logging.basicConfig(level=getattr(logging, config.LOG_LEVEL))
-logger = logging.getLogger(__name__)
-
-# Initialize Bedrock AgentCore App for MCP server
-app = BedrockAgentCoreApp()
+print("🔒 Using Lake Formation row-level security (production mode)")
 
 # Global Athena tools instance
 athena_tools = None
 
+# Configuration cache
+_config_cache = None
+
+
+def get_config() -> Dict[str, Optional[str]]:
+    """
+    Load configuration from environment variables and SSM Parameter Store.
+    """
+    global _config_cache
+    
+    if _config_cache is not None:
+        return _config_cache
+    
+    config = {}
+    
+    # Get region from boto3 session
+    try:
+        session = boto3.Session()
+        config['region'] = session.region_name
+        print(f"✅ Region: {config['region']}")
+    except Exception as e:
+        print(f"⚠️  Could not detect region: {e}")
+        config['region'] = 'us-west-1'
+    
+    # Get account ID
+    try:
+        sts = boto3.client('sts', region_name=config['region'])
+        config['account_id'] = sts.get_caller_identity()['Account']
+    except Exception as e:
+        print(f"⚠️  Could not get account ID: {e}")
+        config['account_id'] = None
+    
+    ssm = boto3.client('ssm', region_name=config['region'])
+    
+    def get_param(name: str, env_var: str = None, default: str = None) -> Optional[str]:
+        if env_var and env_var in os.environ:
+            value = os.environ[env_var]
+            print(f"✅ {name} from environment: {value}")
+            return value
+        
+        try:
+            response = ssm.get_parameter(Name=f'/app/lakehouse-agent/{name}')
+            value = response['Parameter']['Value']
+            print(f"✅ {name} from SSM: {value}")
+            return value
+        except ssm.exceptions.ParameterNotFound:
+            if default:
+                print(f"ℹ️  {name} using default: {default}")
+                return default
+            print(f"⚠️  {name} not found")
+            return None
+        except Exception as e:
+            print(f"❌ Error getting {name}: {e}")
+            return default
+    
+    config['s3_bucket_name'] = get_param('s3-bucket-name', 'S3_BUCKET_NAME')
+    config['database_name'] = get_param('database-name', 'ATHENA_DATABASE_NAME')
+    config['rls_role_arn'] = get_param('rls-role-arn', 'RLS_ROLE_ARN')
+    config['security_mode'] = get_param('security-mode', 'SECURITY_MODE', 'lakeformation')
+    config['log_level'] = os.environ.get('LOG_LEVEL', 'INFO')
+    
+    if config['s3_bucket_name']:
+        config['s3_output_location'] = f"s3://{config['s3_bucket_name']}/athena-results/"
+    else:
+        config['s3_output_location'] = None
+    
+    config['test_user'] = os.environ.get('TEST_USER_1', 'user001@example.com')
+    config['local_development'] = os.environ.get('LOCAL_DEVELOPMENT', 'false').lower() == 'true'
+    
+    _config_cache = config
+    return config
+
+
+def validate_config(config: Dict[str, Optional[str]]) -> bool:
+    required_params = [
+        ('region', 'AWS Region'),
+        ('s3_bucket_name', 'S3 Bucket Name'),
+        ('database_name', 'Athena Database Name'),
+        ('rls_role_arn', 'RLS Role ARN'),
+        ('security_mode', 'Security Mode')
+    ]
+    
+    missing = []
+    for param, display_name in required_params:
+        if not config.get(param):
+            missing.append(display_name)
+    
+    if missing:
+        print(f"❌ Missing required configuration: {', '.join(missing)}")
+        return False
+    
+    if config['security_mode'] != 'lakeformation':
+        print(f"❌ Invalid security mode: {config['security_mode']}")
+        print("   Only 'lakeformation' is supported")
+        return False
+    
+    return True
+
 
 def get_athena_tools():
-    """
-    Get or create Athena tools instance with Lake Formation security.
-
-    Raises:
-        ValueError: If Lake Formation is not properly configured
-    """
     global athena_tools
     if athena_tools is None:
-        logger.info(f"Initializing Athena tools with Lake Formation RLS...")
-        logger.info(f"  Region: {config.AWS_REGION}")
-        logger.info(f"  Database: {config.ATHENA_DATABASE_NAME}")
-        logger.info(f"  S3 Output: {config.S3_OUTPUT_LOCATION}")
+        config = get_config()
+        
+        print("Initializing Athena tools with Lake Formation RLS...")
+        print(f"  Region: {config['region']}")
+        print(f"  Database: {config['database_name']}")
+        print(f"  S3 Output: {config['s3_output_location']}")
 
-        # Validate Lake Formation configuration
-        if not config.RLS_ROLE_ARN:
+        if not config['rls_role_arn']:
             raise ValueError(
                 "❌ RLS_ROLE_ARN not set in configuration.\n"
-                "   Lake Formation is required for production security.\n"
-                "   Run: python athena-setup/setup_lake_formation.py\n"
-                "   Then add RLS_ROLE_ARN to SSM Parameter Store:\n"
-                "   aws ssm put-parameter --name lh_rls_role_arn --value 'arn:aws:iam::ACCOUNT:role/ROLE_NAME' --type String"
+                "   Lake Formation is required for production security."
             )
 
-        logger.info(f"  RLS Role: {config.RLS_ROLE_ARN}")
+        print(f"  RLS Role: {config['rls_role_arn']}")
 
-        # Initialize with Lake Formation security
         athena_tools = AthenaTools(
-            region=config.AWS_REGION,
-            database_name=config.ATHENA_DATABASE_NAME,
-            s3_output_location=config.S3_OUTPUT_LOCATION,
-            rls_role_arn=config.RLS_ROLE_ARN
+            region=config['region'],
+            database_name=config['database_name'],
+            s3_output_location=config['s3_output_location'],
+            rls_role_arn=config['rls_role_arn']
         )
 
-        logger.info(f"✅ Athena tools initialized with Lake Formation RLS")
+        print("✅ Athena tools initialized with Lake Formation RLS")
 
     return athena_tools
 
 
-def extract_user_identity(payload: Dict[str, Any]) -> str:
-    """Extract user identity from request payload."""
-    headers = payload.get('headers', {})
-    user_id = headers.get('X-User-Identity') or headers.get('x-user-identity')
-
-    if user_id:
-        logger.info(f"Extracted user identity: {user_id}")
+def get_user_id_with_fallback(context_arg: Dict[str, Any] = None) -> str:
+    """Get user ID from context argument or fallback to test user."""
+    config = get_config()
+    user_id = None
+    
+    if context_arg:
+        print(f"📋 Context argument received: {context_arg}")
+        user_id = context_arg.get('user_id')
+        if user_id:
+            print(f"   Got user_id from context argument: {user_id}")
+            return user_id
+    
+    if config['local_development']:
+        user_id = config['test_user']
+        print(f"⚠️  Using test user for local development: {user_id}")
         return user_id
-
-    context = payload.get('context', {})
-    user_id = context.get('user_id') or context.get('user_identity')
-
-    if user_id:
-        logger.info(f"Extracted user identity from context: {user_id}")
-        return user_id
-
-    # Fallback to test user for development
-    if config.LOCAL_DEVELOPMENT:
-        logger.warning("Using test user for local development")
-        return config.TEST_USER_1
-
-    logger.error("User identity not found in request")
+    
+    print("❌ User identity not found in request")
     return None
 
 
-@app.tool(
+@mcp.tool(
     name="query_claims",
     description="Query health lakehouse data for the authenticated user with optional filters"
 )
@@ -118,128 +195,172 @@ def query_claims(
     claim_status: str = None,
     claim_type: str = None,
     start_date: str = None,
-    end_date: str = None
+    end_date: str = None,
+    context: Dict[str, Any] = None
 ) -> Dict[str, Any]:
     """Query lakehouse data for the authenticated user."""
+    print("=" * 60)
+    print("🔧 TOOL INVOKED: query_claims")
+    print("=" * 60)
+    
+    print("📥 INPUT PARAMETERS:")
+    print(f"   claim_status: {claim_status}")
+    print(f"   claim_type: {claim_type}")
+    print(f"   start_date: {start_date}")
+    print(f"   end_date: {end_date}")
+    print(f"   context: {context}")
+    
     try:
-        user_id = app.get_context().get('user_id', config.TEST_USER_1)
+        user_id = get_user_id_with_fallback(context)
+        print(f"👤 USER ID: {user_id}")
+        
+        if not user_id:
+            return {"success": False, "error": "User identity not found in request"}
+        
         filters = {k: v for k, v in {
             'claim_status': claim_status,
             'claim_type': claim_type,
             'start_date': start_date,
             'end_date': end_date
         }.items() if v is not None}
+        
+        print(f"🔍 FILTERS: {filters}")
 
         tools = get_athena_tools()
-        return tools.query_claims(user_id, filters if filters else None)
+        result = tools.query_claims(user_id, filters if filters else None)
+        
+        print("📤 OUTPUT:")
+        print(f"   success: {result.get('success', 'N/A')}")
+        if result.get('success'):
+            claims_count = len(result.get('claims', []))
+            print(f"   claims_count: {claims_count}")
+        else:
+            print(f"   error: {result.get('error', 'N/A')}")
+        
+        print("=" * 60)
+        return result
 
     except Exception as e:
-        logger.error(f"Error in query_claims: {str(e)}")
+        print(f"❌ ERROR in query_claims: {str(e)}")
+        import traceback
+        print(f"   Stack trace: {traceback.format_exc()}")
+        print("=" * 60)
         return {"success": False, "error": str(e)}
 
 
-@app.tool(
+@mcp.tool(
     name="get_claim_details",
     description="Get detailed information about a specific claim by ID"
 )
-def get_claim_details(claim_id: str) -> Dict[str, Any]:
+def get_claim_details(claim_id: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Get details of a specific claim."""
+    print("=" * 60)
+    print("🔧 TOOL INVOKED: get_claim_details")
+    print("=" * 60)
+    
+    print("📥 INPUT PARAMETERS:")
+    print(f"   claim_id: {claim_id}")
+    print(f"   context: {context}")
+    
     try:
-        user_id = app.get_context().get('user_id', config.TEST_USER_1)
+        user_id = get_user_id_with_fallback(context)
+        print(f"👤 USER ID: {user_id}")
+        
+        if not user_id:
+            return {"success": False, "error": "User identity not found in request"}
+        
         tools = get_athena_tools()
-        return tools.get_claim_details(user_id, claim_id)
+        result = tools.get_claim_details(user_id, claim_id)
+        
+        print("📤 OUTPUT:")
+        print(f"   success: {result.get('success', 'N/A')}")
+        if result.get('success'):
+            claim_data = result.get('claim', {})
+            print(f"   claim_id: {claim_data.get('claim_id', 'N/A')}")
+            print(f"   claim_status: {claim_data.get('claim_status', 'N/A')}")
+        else:
+            print(f"   error: {result.get('error', 'N/A')}")
+        
+        print("=" * 60)
+        return result
 
     except Exception as e:
-        logger.error(f"Error in get_claim_details: {str(e)}")
+        print(f"❌ ERROR in get_claim_details: {str(e)}")
+        import traceback
+        print(f"   Stack trace: {traceback.format_exc()}")
+        print("=" * 60)
         return {"success": False, "error": str(e)}
 
 
-@app.tool(
+@mcp.tool(
     name="get_claims_summary",
     description="Get summary statistics of all claims for the authenticated user"
 )
-def get_claims_summary() -> Dict[str, Any]:
+def get_claims_summary(context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Get claims summary for the user."""
+    print("=" * 60)
+    print("🔧 TOOL INVOKED: get_claims_summary")
+    print("=" * 60)
+    
+    print("📥 INPUT PARAMETERS:")
+    print(f"   context: {context}")
+    
     try:
-        user_id = app.get_context().get('user_id', config.TEST_USER_1)
-        tools = get_athena_tools()
-        return tools.get_claims_summary(user_id)
-
-    except Exception as e:
-        logger.error(f"Error in get_claims_summary: {str(e)}")
-        return {"success": False, "error": str(e)}
-
-
-@app.entrypoint
-def handle_request(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle incoming requests to the MCP server."""
-    try:
-        logger.info(f"Received request")
-
-        user_id = extract_user_identity(payload)
-
+        user_id = get_user_id_with_fallback(context)
+        print(f"👤 USER ID: {user_id}")
+        
         if not user_id:
-            return {
-                "success": False,
-                "error": "User identity not found",
-                "message": "Authentication required"
-            }
-
-        # Store user_id in context for tools
-        app.set_context({'user_id': user_id})
-
-        return {
-            "success": True,
-            "message": "Request processed",
-            "user_id": user_id,
-            "security_mode": config.SECURITY_MODE
-        }
+            return {"success": False, "error": "User identity not found in request"}
+        
+        tools = get_athena_tools()
+        result = tools.get_claims_summary(user_id)
+        
+        print("📤 OUTPUT:")
+        print(f"   success: {result.get('success', 'N/A')}")
+        if result.get('success'):
+            summary = result.get('summary', {})
+            print(f"   total_claims: {summary.get('total_claims', 'N/A')}")
+            print(f"   total_amount: {summary.get('total_amount', 'N/A')}")
+            print(f"   by_status: {summary.get('by_status', 'N/A')}")
+        else:
+            print(f"   error: {result.get('error', 'N/A')}")
+        
+        print("=" * 60)
+        return result
 
     except Exception as e:
-        logger.error(f"Error handling request: {str(e)}")
+        print(f"❌ ERROR in get_claims_summary: {str(e)}")
+        import traceback
+        print(f"   Stack trace: {traceback.format_exc()}")
+        print("=" * 60)
         return {"success": False, "error": str(e)}
 
 
 if __name__ == "__main__":
-    # Validate configuration before starting
     print("\n🔍 Validating configuration...")
-
-    # Enforce Lake Formation security mode
-    if config.SECURITY_MODE != 'lakeformation':
+    
+    config = get_config()
+    
+    if config['security_mode'] != 'lakeformation':
         print("\n❌ Error: Only Lake Formation security mode is supported!")
-        print(f"   Current SECURITY_MODE: {config.SECURITY_MODE}")
-        print(f"\n📝 Please update SSM Parameter Store:")
-        print(f"   aws ssm put-parameter --name lh_security_mode --value 'lakeformation' --type String --overwrite")
-        print(f"\n   Application-level SQL filtering has been removed for security reasons.")
-        print(f"   See SECURITY_BEST_PRACTICES.md for details.")
+        print(f"   Current SECURITY_MODE: {config['security_mode']}")
         sys.exit(1)
 
-    if not config.is_valid():
+    if not validate_config(config):
         print("\n❌ Configuration is invalid!")
-        config.print_status()
-        print("\n📝 Please update your SSM parameters.")
-        print("   See CONFIGURATION_GUIDE.md for details.")
         sys.exit(1)
 
-    # Validate Lake Formation is configured
-    if not config.RLS_ROLE_ARN:
+    if not config['rls_role_arn']:
         print("\n❌ Error: Lake Formation RLS is not configured!")
-        print("\n📝 Setup Lake Formation:")
-        print("   cd athena-setup")
-        print("   python setup_lake_formation.py")
-        print("\n   Then add RLS_ROLE_ARN to SSM Parameter Store:")
-        print("   aws ssm put-parameter --name lh_rls_role_arn --value 'arn:aws:iam::ACCOUNT:role/ROLE_NAME' --type String")
         sys.exit(1)
 
     print("✅ Configuration validated")
     print("🔒 Lake Formation row-level security enabled")
 
-    # Print configuration summary
-    logger.info(f"Starting MCP Server with Lake Formation RLS:")
-    logger.info(f"  Region: {config.AWS_REGION}")
-    logger.info(f"  Database: {config.ATHENA_DATABASE_NAME}")
-    logger.info(f"  S3 Output: {config.S3_OUTPUT_LOCATION}")
-    logger.info(f"  RLS Role: {config.RLS_ROLE_ARN}")
+    print(f"Starting MCP Server with Lake Formation RLS:")
+    print(f"  Region: {config['region']}")
+    print(f"  Database: {config['database_name']}")
+    print(f"  S3 Output: {config['s3_output_location']}")
+    print(f"  RLS Role: {config['rls_role_arn']}")
 
-    # Run the MCP server
-    app.run()
+    mcp.run(transport="streamable-http")

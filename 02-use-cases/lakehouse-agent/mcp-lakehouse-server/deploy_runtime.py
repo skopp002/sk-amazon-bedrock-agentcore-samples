@@ -17,15 +17,9 @@ Usage:
     python deploy_runtime.py
 """
 
-import sys
-from pathlib import Path
-
-# Add parent directory to path to import config
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import boto3
 import json
-from config import config
+import sys
 
 try:
     from bedrock_agentcore_starter_toolkit import Runtime
@@ -34,9 +28,105 @@ except ImportError:
     print("   Please install it with: pip install bedrock-agentcore-starter-toolkit")
     sys.exit(1)
 
-def create_runtime_role():
+
+class SSMConfig:
+    """Load configuration from SSM Parameter Store."""
+    
+    def __init__(self):
+        """Initialize and load configuration from SSM."""
+        # Get region from boto3 session
+        session = boto3.Session()
+        self.region = session.region_name
+        
+        self.ssm = boto3.client('ssm', region_name=self.region)
+        self.sts = boto3.client('sts', region_name=self.region)
+        
+        # Get account ID
+        self.account_id = self.sts.get_caller_identity()['Account']
+        
+        # Load configuration from SSM
+        self.s3_bucket_name = self._get_parameter('/app/lakehouse-agent/s3-bucket-name')
+        self.database_name = self._get_parameter('/app/lakehouse-agent/database-name')
+        self.rls_role_arn = self._get_parameter('/app/lakehouse-agent/rls-role-arn')
+        self.cognito_user_pool_arn = self._get_parameter('/app/lakehouse-agent/cognito-user-pool-arn')
+
+        # Constants
+        self.security_mode = 'lakeformation'
+        self.log_level = 'DEBUG'
+        
+        print(f"✅ Configuration loaded from SSM Parameter Store")
+        print(f"   Region: {self.region}")
+        print(f"   Account: {self.account_id}")
+    
+    def _get_parameter(self, parameter_name: str) -> str:
+        """Get parameter value from SSM Parameter Store."""
+        try:
+            response = self.ssm.get_parameter(Name=parameter_name)
+            return response['Parameter']['Value']
+        except self.ssm.exceptions.ParameterNotFound:
+            print(f"❌ SSM parameter {parameter_name} not found")
+            print(f"   Please run the setup scripts first")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error retrieving parameter {parameter_name}: {e}")
+            sys.exit(1)
+    
+    def is_valid(self) -> bool:
+        """Check if all required configuration is present."""
+        return all([
+            self.s3_bucket_name,
+            self.database_name,
+            self.rls_role_arn,
+            self.region,
+            self.account_id
+        ])
+    
+    def print_status(self):
+        """Print configuration status."""
+        print(f"\n📋 Configuration Status:")
+        print(f"   AWS Account: {self.account_id}")
+        print(f"   Region: {self.region}")
+        print(f"   S3 Bucket: {self.s3_bucket_name}")
+        print(f"   Database: {self.database_name}")
+        print(f"   RLS Role ARN: {self.rls_role_arn}")
+        print(f"   Cognito User Pool ARN: {self.cognito_user_pool_arn}")
+        print(f"   Security Mode: {self.security_mode}")
+        print(f"   Log Level: {self.log_level}")
+
+    def store_runtime_parameters(self, runtime_arn: str, runtime_id: str):
+        """Store MCP server runtime information in SSM Parameter Store."""
+        print("\n💾 Storing runtime configuration in SSM Parameter Store...")
+        
+        parameters = [
+            {
+                'name': '/app/lakehouse-agent/mcp-server-runtime-arn',
+                'value': runtime_arn,
+                'description': 'MCP Athena Server runtime ARN on AgentCore'
+            },
+            {
+                'name': '/app/lakehouse-agent/mcp-server-runtime-id',
+                'value': runtime_id,
+                'description': 'MCP Athena Server runtime ID on AgentCore'
+            }
+        ]
+        
+        for param in parameters:
+            try:
+                self.ssm.put_parameter(
+                    Name=param['name'],
+                    Value=param['value'],
+                    Description=param['description'],
+                    Type='String',
+                    Overwrite=True
+                )
+                print(f"✅ Stored parameter: {param['name']} = {param['value']}")
+            except Exception as e:
+                print(f"❌ Error storing parameter {param['name']}: {e}")
+                raise
+
+def create_runtime_role(config: SSMConfig):
     """Create IAM role for AgentCore Runtime execution."""
-    iam = boto3.client('iam', region_name=config.AWS_REGION)
+    iam = boto3.client('iam', region_name=config.region)
     
     role_name = 'AgentCoreRuntimeRole-lakehouse-mcp'
     
@@ -88,16 +178,17 @@ def create_runtime_role():
                     "s3:PutObject"
                 ],
                 "Resource": [
-                    f"arn:aws:s3:::{config.S3_BUCKET_NAME}/*",
-                    f"arn:aws:s3:::{config.S3_BUCKET_NAME}"
+                    f"arn:aws:s3:::{config.s3_bucket_name}/*",
+                    f"arn:aws:s3:::{config.s3_bucket_name}"
                 ]
             },
             {
                 "Effect": "Allow",
                 "Action": [
-                    "sts:AssumeRole"
+                    "sts:AssumeRole",
+                    "sts:TagSession"
                 ],
-                "Resource": config.RLS_ROLE_ARN
+                "Resource": config.rls_role_arn
             },
             {
                 "Effect": "Allow",
@@ -109,11 +200,12 @@ def create_runtime_role():
             {
                 "Effect": "Allow",
                 "Action": [
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents"
+                    "logs:*"
                 ],
-                "Resource": "arn:aws:logs:*:*:*"
+                "Resource": [
+                    f"arn:aws:logs:{config.region}:{config.account_id}:log-group:/aws/bedrock-agentcore/*",
+                    f"arn:aws:logs:{config.region}:{config.account_id}:log-group:/aws/agentcore/*"
+                ]
             },
             {
                 "Effect": "Allow",
@@ -124,6 +216,14 @@ def create_runtime_role():
                     "ecr:BatchGetImage"
                 ],
                 "Resource": "*"
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "ssm:GetParameter",
+                    "ssm:GetParameters"
+                ],
+                "Resource": f"arn:aws:ssm:{config.region}:{config.account_id}:parameter/app/lakehouse-agent/*"
             }
         ]
     }
@@ -165,24 +265,24 @@ def create_runtime_role():
         return role_arn
 
 
-def deploy_to_runtime(role_arn):
+def deploy_to_runtime(config: SSMConfig, role_arn: str):
     """Deploy MCP server to AgentCore Runtime using starter toolkit."""
     runtime_name = 'lakehouse_mcp_server'  # Must use underscores, not hyphens
     
     try:
         print(f"\n🚀 Deploying MCP server to AgentCore Runtime...")
         print(f"   Name: {runtime_name}")
-        print(f"   Region: {config.AWS_REGION}")
+        print(f"   Region: {config.region}")
         print(f"   This will build a Docker container and deploy it...")
         
         # Build environment variables
         env_vars = {
-            'AWS_REGION': config.AWS_REGION,
-            'S3_BUCKET_NAME': config.S3_BUCKET_NAME,
-            'ATHENA_DATABASE_NAME': config.ATHENA_DATABASE_NAME,
-            'RLS_ROLE_ARN': config.RLS_ROLE_ARN,
-            'SECURITY_MODE': 'lakeformation',
-            'LOG_LEVEL': config.LOG_LEVEL
+            'AWS_REGION': config.region,
+            'S3_BUCKET_NAME': config.s3_bucket_name,
+            'ATHENA_DATABASE_NAME': config.database_name,
+            'RLS_ROLE_ARN': config.rls_role_arn,
+            'SECURITY_MODE': config.security_mode,
+            'LOG_LEVEL': config.log_level
         }
         
         print(f"\n📋 Environment variables:")
@@ -198,18 +298,39 @@ def deploy_to_runtime(role_arn):
         # Extract role name from ARN (format: arn:aws:iam::account:role/RoleName)
         role_name = role_arn.split('/')[-1]
         
-        # Note: Environment variables are read from config.py/SSM Parameter Store by the MCP server
-        # The starter toolkit will package the entire directory including config files
+        # Extract user pool ID from ARN and build JWT configuration
+        user_pool_id = config.cognito_user_pool_arn.split('/')[-1]
+        issuer = f"https://cognito-idp.{config.region}.amazonaws.com/{user_pool_id}"
+        discovery_url = f"{issuer}/.well-known/openid-configuration"
+        
+        # Get M2M client ID
+        response = config.ssm.get_parameter(Name='/app/lakehouse-agent/cognito-m2m-client-id')
+        cognito_m2m_client_id = response['Parameter']['Value']
+        allowed_clients = [cognito_m2m_client_id]
+        print(f"\n🔐 JWT Authentication Configuration:")
+        print(f"   Discovery URL: {discovery_url}")
+        print(f"   Allowed Clients:")
+        print(f"      - {cognito_m2m_client_id} (M2M only)")
+        auth_config = {
+            "customJWTAuthorizer": {
+                "allowedClients": allowed_clients,
+                "discoveryUrl": discovery_url
+            }
+        }
+        
+        # Note: Environment variables are read from SSM Parameter Store by the MCP server
+        # The starter toolkit will package the entire directory
         agentcore_runtime.configure(
             entrypoint="server.py",
             execution_role=role_name,  # Use role name, not ARN
             auto_create_ecr=True,
             requirements_file="requirements.txt",
-            region=config.AWS_REGION,
+            region=config.region,
             protocol="MCP",
-            agent_name=runtime_name
+            agent_name=runtime_name,
+            authorizer_configuration=auth_config
         )
-        print(f"✅ Configuration complete")
+        print(f"✅ Configuration complete with JWT authentication")
         
         # Launch the runtime (builds Docker image and deploys)
         print(f"\n🚀 Launching to AgentCore Runtime...")
@@ -222,6 +343,13 @@ def deploy_to_runtime(role_arn):
         print(f"\n✅ MCP Server deployed successfully!")
         print(f"   Runtime ARN: {runtime_arn}")
         print(f"   Runtime ID: {runtime_id}")
+        
+        # Note about JWT authentication
+        print(f"\n⚠️  Important: Configure JWT Authentication")
+        print(f"   The runtime is deployed but needs JWT authentication configured.")
+        print(f"   Run the configuration script:")
+        print(f"   cd mcp-lakehouse-server")
+        print(f"   python configure_runtime_auth.py")
         
         return {
             'runtime_arn': runtime_arn,
@@ -242,16 +370,18 @@ def main():
     print("MCP Athena Server Deployment to AgentCore Runtime")
     print("=" * 70)
     
-    # Validate configuration
-    print("\n🔍 Validating configuration...")
+    # Load configuration from SSM
+    print("\n🔍 Loading configuration from SSM Parameter Store...")
+    config = SSMConfig()
     
+    # Validate configuration
     if not config.is_valid():
         print("\n❌ Configuration is invalid!")
         config.print_status()
-        print("\n📝 Please update your SSM parameters.")
+        print("\n📝 Please run the setup scripts first.")
         sys.exit(1)
     
-    if not config.RLS_ROLE_ARN:
+    if not config.rls_role_arn:
         print("\n❌ Error: Lake Formation RLS is not configured!")
         print("\n📝 Setup Lake Formation:")
         print("   cd athena-setup")
@@ -261,13 +391,7 @@ def main():
     print("✅ Configuration validated")
     
     # Print configuration summary
-    print(f"\n📋 Configuration:")
-    print(f"   AWS Account: {config.AWS_ACCOUNT_ID}")
-    print(f"   Region: {config.AWS_REGION}")
-    print(f"   Database: {config.ATHENA_DATABASE_NAME}")
-    print(f"   S3 Bucket: {config.S3_BUCKET_NAME}")
-    print(f"   RLS Role: {config.RLS_ROLE_ARN}")
-    print(f"   Security Mode: {config.SECURITY_MODE}")
+    config.print_status()
     
     # Confirm deployment
     response = input("\nProceed with deployment? (yes/no): ")
@@ -280,28 +404,33 @@ def main():
         print("\n" + "=" * 70)
         print("Step 1: Creating IAM Role")
         print("=" * 70)
-        role_arn = create_runtime_role()
+        role_arn = create_runtime_role(config)
         
         # Step 2: Deploy to runtime
         print("\n" + "=" * 70)
         print("Step 2: Deploying to AgentCore Runtime")
         print("=" * 70)
-        result = deploy_to_runtime(role_arn)
+        result = deploy_to_runtime(config, role_arn)
+        
+        # Step 3: Store runtime parameters in SSM
+        print("\n" + "=" * 70)
+        print("Step 3: Storing Runtime Configuration")
+        print("=" * 70)
+        config.store_runtime_parameters(result['runtime_arn'], result['runtime_id'])
         
         # Print summary
         print("\n" + "=" * 70)
         print("Deployment Complete!")
         print("=" * 70)
         
-        print("\n📝 Add these values to SSM Parameter Store:\n")
-        print(f"aws ssm put-parameter --name lh_mcp_server_runtime_arn --value '{result['runtime_arn']}' --type String --overwrite")
-        print(f"aws ssm put-parameter --name lh_mcp_server_runtime_id --value '{result['runtime_id']}' --type String --overwrite")
+        print("\n✅ Runtime configuration stored in SSM Parameter Store:")
+        print(f"   /app/lakehouse-agent/mcp-server-runtime-arn")
+        print(f"   /app/lakehouse-agent/mcp-server-runtime-id")
         
-        print("\n🔗 Next Steps:")
-        print("   1. Update SSM Parameter Store with the values above")
-        print("   2. Deploy the Gateway and Interceptor (Step 7)")
-        print("   3. Deploy the Lakehouse Agent (Step 8)")
-        print("   4. Test the system end-to-end")
+        print("\n📋 Next Steps:")
+        print("   1. Deploy the Gateway and Interceptor (Step 7)")
+        print("   2. Deploy the Lakehouse Agent (Step 8)")
+        print("   3. Test the system end-to-end")
         
         print("\n" + "=" * 70)
         

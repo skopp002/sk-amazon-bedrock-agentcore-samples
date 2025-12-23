@@ -10,20 +10,91 @@ Key Features:
 - Session tags pass user identity from OAuth to AWS credentials
 - No SQL injection risk - filtering happens before query execution
 - Fully auditable through CloudTrail and Lake Formation logs
+
+Usage:
+    python setup_lake_formation.py
+
+The script reads the S3 bucket name from SSM Parameter Store at /app/lakehouse-agent/s3-bucket-name
 """
 
 import boto3
-import argparse
 import json
+import sys
 from typing import Dict, List
 
 class LakeFormationSetup:
-    def __init__(self, region: str):
-        self.region = region
-        self.lf_client = boto3.client('lakeformation', region_name=region)
-        self.glue_client = boto3.client('glue', region_name=region)
-        self.iam_client = boto3.client('iam', region_name=region)
-        self.sts_client = boto3.client('sts', region_name=region)
+    def __init__(self):
+        """
+        Initialize Lake Formation setup with AWS region from boto3 session.
+        """
+        # Get region from boto3 session
+        session = boto3.Session()
+        self.region = session.region_name
+        
+        self.lf_client = boto3.client('lakeformation', region_name=self.region)
+        self.glue_client = boto3.client('glue', region_name=self.region)
+        self.iam_client = boto3.client('iam', region_name=self.region)
+        self.sts_client = boto3.client('sts', region_name=self.region)
+        self.ssm_client = boto3.client('ssm', region_name=self.region)
+
+    def get_bucket_name_from_ssm(self) -> str:
+        """
+        Get S3 bucket name from SSM Parameter Store.
+        
+        Returns:
+            S3 bucket name from /app/lakehouse-agent/s3-bucket-name parameter
+        """
+        try:
+            response = self.ssm_client.get_parameter(
+                Name='/app/lakehouse-agent/s3-bucket-name'
+            )
+            bucket_name = response['Parameter']['Value']
+            print(f"✅ Retrieved bucket name from SSM: {bucket_name}")
+            return bucket_name
+        except self.ssm_client.exceptions.ParameterNotFound:
+            print(f"❌ SSM parameter /app/lakehouse-agent/s3-bucket-name not found")
+            print(f"   Please run setup_athena.py first to create the required parameters")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error retrieving bucket name from SSM: {e}")
+            sys.exit(1)
+
+    def store_parameters_in_ssm(self, role_name: str, role_arn: str):
+        """
+        Store Lake Formation role information in SSM Parameter Store.
+        
+        Args:
+            role_name: IAM role name
+            role_arn: IAM role ARN
+        """
+        print("\n💾 Storing configuration in SSM Parameter Store...")
+        
+        parameters = [
+            {
+                'name': '/app/lakehouse-agent/rls-role-name',
+                'value': role_name,
+                'description': 'Lake Formation RLS IAM role name'
+            },
+            {
+                'name': '/app/lakehouse-agent/rls-role-arn',
+                'value': role_arn,
+                'description': 'Lake Formation RLS IAM role ARN'
+            }
+        ]
+        
+        for param in parameters:
+            try:
+                self.ssm_client.put_parameter(
+                    Name=param['name'],
+                    Value=param['value'],
+                    Description=param['description'],
+                    Type='String',
+                    Overwrite=True
+                )
+                print(f"✅ Stored parameter: {param['name']} = {param['value']}")
+            except Exception as e:
+                print(f"❌ Error storing parameter {param['name']}: {e}")
+                raise
 
     def register_s3_location(self, s3_path: str, role_arn: str):
         """
@@ -158,10 +229,13 @@ class LakeFormationSetup:
                 {
                     "Effect": "Allow",
                     "Principal": {
-                        "Service": "lambda.amazonaws.com",
+                        "Service": [
+                            "lambda.amazonaws.com",
+                            "lakeformation.amazonaws.com"
+                        ],
                         "AWS": f"arn:aws:iam::{self.sts_client.get_caller_identity()['Account']}:root"
                     },
-                    "Action": "sts:AssumeRole"
+                    "Action": ["sts:AssumeRole", "sts:TagSession"]
                 },
                 {
                     "Effect": "Allow",
@@ -200,6 +274,11 @@ class LakeFormationSetup:
 
             self.iam_client.attach_role_policy(
                 RoleName=role_name,
+                PolicyArn='arn:aws:iam::aws:policy/AmazonS3FullAccess'
+            )
+
+            self.iam_client.attach_role_policy(
+                RoleName=role_name,
                 PolicyArn='arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole'
             )
 
@@ -223,20 +302,24 @@ class LakeFormationSetup:
 
     def setup_complete_rls(
         self,
-        database_name: str,
-        table_name: str,
-        s3_bucket: str,
+        database_name: str = 'lakehouse_db',
+        table_name: str = 'claims',
+        s3_bucket: str = None,
         role_name: str = 'lakehouse-rls-role'
     ):
         """
         Complete setup for row-level security using Lake Formation.
 
         Args:
-            database_name: Athena/Glue database name
-            table_name: Table name
-            s3_bucket: S3 bucket name
-            role_name: IAM role name to create
+            database_name: Athena/Glue database name (default: 'lakehouse_db')
+            table_name: Table name (default: 'claims')
+            s3_bucket: S3 bucket name (default: read from SSM Parameter Store)
+            role_name: IAM role name to create (default: 'lakehouse-rls-role')
         """
+        # Get bucket name from SSM Parameter Store if not provided
+        if s3_bucket is None:
+            s3_bucket = self.get_bucket_name_from_ssm()
+        
         print(f"\n🚀 Setting up Lake Formation Row-Level Security")
         print(f"   Database: {database_name}")
         print(f"   Table: {table_name}")
@@ -271,12 +354,21 @@ class LakeFormationSetup:
             permissions=['SELECT']
         )
 
+        # Step 5: Store configuration in SSM Parameter Store
+        self.store_parameters_in_ssm(role_name, role_arn)
+
         print(f"\n✨ Lake Formation Row-Level Security setup complete!")
         print(f"\n📝 Configuration Summary:")
+        print(f"   Role Name: {role_name}")
         print(f"   Role ARN: {role_arn}")
         print(f"   S3 Location: {s3_path}")
         print(f"   Data Filter: user_claims_filter")
         print(f"   Filter Expression: {filter_expression}")
+        
+        print(f"\n💾 SSM Parameters Stored:")
+        print(f"   • /app/lakehouse-agent/rls-role-name")
+        print(f"   • /app/lakehouse-agent/rls-role-arn")
+        
         print(f"\n🔒 Security Model:")
         print(f"   1. OAuth user identity extracted from JWT in Gateway interceptor")
         print(f"   2. User identity passed as session tag when assuming IAM role")
@@ -285,6 +377,7 @@ class LakeFormationSetup:
         print(f"   5. Application code NEVER sees other users' data")
 
         return {
+            'role_name': role_name,
             'role_arn': role_arn,
             's3_path': s3_path,
             'filter_name': 'user_claims_filter',
@@ -293,24 +386,8 @@ class LakeFormationSetup:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Setup Lake Formation for row-level security on health lakehouse data'
-    )
-    parser.add_argument('--region', default='us-east-1', help='AWS region')
-    parser.add_argument('--database', default='lakehouse_db', help='Glue database name')
-    parser.add_argument('--table', default='claims', help='Table name')
-    parser.add_argument('--bucket', required=True, help='S3 bucket name (with or without s3:// prefix)')
-    parser.add_argument('--role-name', default='lakehouse-rls-role', help='IAM role name')
-
-    args = parser.parse_args()
-
-    setup = LakeFormationSetup(args.region)
-    setup.setup_complete_rls(
-        database_name=args.database,
-        table_name=args.table,
-        s3_bucket=args.bucket,
-        role_name=args.role_name
-    )
+    setup = LakeFormationSetup()
+    setup.setup_complete_rls()
 
 
 if __name__ == '__main__':

@@ -20,6 +20,7 @@ for Lake Formation row-level security enforcement.
 import json
 import logging
 import os
+import boto3
 from typing import Dict, Any, Optional
 import urllib.request
 import base64
@@ -29,14 +30,57 @@ from jose import jwt, JWTError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Cognito configuration (from environment variables)
-COGNITO_REGION = os.environ.get('COGNITO_REGION', 'us-east-1')
-COGNITO_USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID', '')
-COGNITO_APP_CLIENT_ID = os.environ.get('COGNITO_APP_CLIENT_ID', '')
-COGNITO_ISSUER = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}'
-
-# Cache for Cognito public keys
+# Cache for configuration and keys
+_config = None
 _jwks = None
+
+
+def get_config() -> Dict[str, str]:
+    """
+    Get Cognito configuration from environment variables or SSM.
+    
+    Returns:
+        Dictionary with Cognito configuration
+    """
+    global _config
+    
+    if _config is not None:
+        return _config
+    
+    # First try environment variables
+    region = os.environ.get('COGNITO_REGION') or os.environ.get('AWS_REGION', 'us-west-2')
+    user_pool_id = os.environ.get('COGNITO_USER_POOL_ID', '')
+    app_client_id = os.environ.get('COGNITO_APP_CLIENT_ID', '')
+    
+    # If not set, try SSM Parameter Store
+    if not user_pool_id or not app_client_id:
+        logger.info("Loading Cognito configuration from SSM Parameter Store...")
+        try:
+            ssm = boto3.client('ssm', region_name=region)
+            
+            if not user_pool_id:
+                response = ssm.get_parameter(Name='/app/lakehouse-agent/cognito-user-pool-id')
+                user_pool_id = response['Parameter']['Value']
+                logger.info(f"Loaded user_pool_id from SSM: {user_pool_id}")
+            
+            if not app_client_id:
+                response = ssm.get_parameter(Name='/app/lakehouse-agent/cognito-app-client-id')
+                app_client_id = response['Parameter']['Value']
+                logger.info(f"Loaded app_client_id from SSM: {app_client_id}")
+                
+        except Exception as e:
+            logger.error(f"Error loading configuration from SSM: {e}")
+            raise
+    
+    _config = {
+        'region': region,
+        'user_pool_id': user_pool_id,
+        'app_client_id': app_client_id,
+        'issuer': f'https://cognito-idp.{region}.amazonaws.com/{user_pool_id}'
+    }
+    
+    logger.info(f"Cognito configuration loaded: region={region}, user_pool_id={user_pool_id}")
+    return _config
 
 
 def get_cognito_public_keys() -> Dict[str, Any]:
@@ -52,7 +96,10 @@ def get_cognito_public_keys() -> Dict[str, Any]:
         return _jwks
 
     try:
-        jwks_url = f'{COGNITO_ISSUER}/.well-known/jwks.json'
+        config = get_config()
+        jwks_url = f"{config['issuer']}/.well-known/jwks.json"
+        logger.info(f"Fetching JWKS from: {jwks_url}")
+        
         with urllib.request.urlopen(jwks_url) as response:
             _jwks = json.loads(response.read())
             logger.info("Successfully fetched Cognito public keys")
@@ -73,6 +120,8 @@ def validate_and_decode_jwt(token: str) -> Optional[Dict[str, Any]]:
         Decoded JWT claims or None if invalid
     """
     try:
+        config = get_config()
+        
         # Get Cognito public keys
         jwks = get_cognito_public_keys()
 
@@ -92,13 +141,33 @@ def validate_and_decode_jwt(token: str) -> Optional[Dict[str, Any]]:
             return None
 
         # Validate and decode JWT
-        claims = jwt.decode(
-            token,
-            key,
-            algorithms=['RS256'],
-            audience=COGNITO_APP_CLIENT_ID,
-            issuer=COGNITO_ISSUER
-        )
+        # Note: For access tokens, we don't validate audience since Cognito
+        # access tokens don't have 'aud' claim. We validate client_id instead.
+        try:
+            claims = jwt.decode(
+                token,
+                key,
+                algorithms=['RS256'],
+                audience=config['app_client_id'],
+                issuer=config['issuer']
+            )
+        except JWTError as e:
+            # If audience validation fails, try without audience (for access tokens)
+            if 'audience' in str(e).lower() or 'aud' in str(e).lower():
+                logger.info("Retrying JWT validation without audience check (access token)")
+                claims = jwt.decode(
+                    token,
+                    key,
+                    algorithms=['RS256'],
+                    issuer=config['issuer'],
+                    options={'verify_aud': False}
+                )
+                # Manually verify client_id for access tokens
+                if claims.get('client_id') != config['app_client_id']:
+                    logger.error(f"Client ID mismatch: {claims.get('client_id')} != {config['app_client_id']}")
+                    return None
+            else:
+                raise
 
         logger.info(f"Successfully validated JWT for user: {claims.get('username', claims.get('sub'))}")
         return claims

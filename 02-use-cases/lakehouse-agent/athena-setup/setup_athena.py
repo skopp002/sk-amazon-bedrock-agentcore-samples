@@ -9,35 +9,51 @@ This script:
 4. Verifies the setup by running test queries
 
 Usage:
-    python setup_athena.py --region us-east-1 --bucket-name my-lakehouse-bucket
+    python setup_athena.py --bucket-name BUCKET_NAME
+
+Arguments:
+    --bucket-name: (Required) Base name for S3 bucket. Will be prefixed with {account_id}-{region_name}-
+                   Example: --bucket-name my-lakehouse creates bucket 123456789012-us-east-1-my-lakehouse
 """
 
 import boto3
 import csv
 import io
 import time
-import argparse
 import sys
+import argparse
 from datetime import datetime, date
 from decimal import Decimal
 from typing import List, Dict, Any
 
 class AthenaSetup:
-    def __init__(self, region: str, bucket_name: str):
+    def __init__(self, bucket_base_name: str):
         """
         Initialize Athena setup with AWS region and S3 bucket name.
-
+        
+        Region is obtained from the boto3 session.
+        Bucket name is constructed as: {account_id}-{region}-{bucket_base_name}
+        
         Args:
-            region: AWS region (e.g., 'us-east-1')
-            bucket_name: S3 bucket name for storing data and query results
+            bucket_base_name: Base name for S3 bucket (will be prefixed with account_id and region)
         """
-        self.region = region
-        self.bucket_name = bucket_name
+        # Get region from boto3 session
+        session = boto3.Session()
+        self.region = session.region_name
+        
+        # Get account ID from STS
+        sts_client = boto3.client('sts')
+        account_id = sts_client.get_caller_identity()['Account']
+        
+        # Construct bucket name with prefix
+        self.bucket_name = f"{account_id}-{self.region}-{bucket_base_name}"
+        
         self.database_name = 'lakehouse_db'
 
         # Initialize AWS clients
-        self.s3_client = boto3.client('s3', region_name=region)
-        self.athena_client = boto3.client('athena', region_name=region)
+        self.s3_client = boto3.client('s3', region_name=self.region)
+        self.athena_client = boto3.client('athena', region_name=self.region)
+        self.ssm_client = boto3.client('ssm', region_name=self.region)
 
         # S3 locations
         self.claims_prefix = 'lakehouse-data/claims/'
@@ -388,6 +404,37 @@ class AthenaSetup:
             print(f"❌ Error executing query: {e}")
             raise
 
+    def store_parameters_in_ssm(self):
+        """Store S3 bucket name and database name in SSM Parameter Store."""
+        print("\n💾 Storing configuration in SSM Parameter Store...")
+        
+        parameters = [
+            {
+                'name': '/app/lakehouse-agent/s3-bucket-name',
+                'value': self.bucket_name,
+                'description': 'S3 bucket name for lakehouse data storage'
+            },
+            {
+                'name': '/app/lakehouse-agent/database-name',
+                'value': self.database_name,
+                'description': 'Athena/Glue database name for lakehouse'
+            }
+        ]
+        
+        for param in parameters:
+            try:
+                self.ssm_client.put_parameter(
+                    Name=param['name'],
+                    Value=param['value'],
+                    Description=param['description'],
+                    Type='String',
+                    Overwrite=True
+                )
+                print(f"✅ Stored parameter: {param['name']} = {param['value']}")
+            except Exception as e:
+                print(f"❌ Error storing parameter {param['name']}: {e}")
+                raise
+
     def setup(self):
         """Run the complete Athena setup."""
         print("\n🚀 Starting Athena Setup for Health Lakehouse Data Processing")
@@ -492,10 +539,16 @@ class AthenaSetup:
         except Exception as e:
             print(f"⚠️  Verification query failed: {e}")
 
+        # Step 7: Store configuration in SSM Parameter Store
+        self.store_parameters_in_ssm()
+
         print("\n✨ Athena setup completed successfully!")
-        print(f"\n📝 Database name: {self.database_name}")
+        print(f"\n�  Database name: {self.database_name}")
         print(f"📁 S3 bucket: s3://{self.bucket_name}")
         print(f"📊 Tables created: claims, users")
+        print(f"💾 SSM Parameters:")
+        print(f"   - /app/lakehouse-agent/s3-bucket-name")
+        print(f"   - /app/lakehouse-agent/database-name")
         print(f"\n🔐 Row-level access control ready:")
         print(f"   - user001@example.com: {len([c for c in claims_data if c['user_id'] == 'user001@example.com'])} claims")
         print(f"   - user002@example.com: {len([c for c in claims_data if c['user_id'] == 'user002@example.com'])} claims")
@@ -506,20 +559,15 @@ def main():
         description='Setup Athena database and tables for health lakehouse data processing'
     )
     parser.add_argument(
-        '--region',
-        default='us-east-1',
-        help='AWS region (default: us-east-1)'
-    )
-    parser.add_argument(
         '--bucket-name',
         required=True,
-        help='S3 bucket name for storing data and query results'
+        help='Base name for S3 bucket (will be prefixed with {account_id}-{region_name}-). Example: my-lakehouse'
     )
 
     args = parser.parse_args()
 
     # Run setup
-    setup = AthenaSetup(args.region, args.bucket_name)
+    setup = AthenaSetup(bucket_base_name=args.bucket_name)
     setup.setup()
 
 if __name__ == '__main__':

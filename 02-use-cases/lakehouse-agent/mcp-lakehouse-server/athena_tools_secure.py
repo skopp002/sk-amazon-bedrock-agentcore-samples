@@ -223,6 +223,7 @@ class SecureAthenaClaimsTools:
                     notes
                 FROM {self.database_name}.claims
                 WHERE 1=1
+                    AND user_id='{user_id}'
             """
 
             # Add optional filters (safely)
@@ -273,6 +274,7 @@ class SecureAthenaClaimsTools:
                 SELECT *
                 FROM {self.database_name}.claims
                 WHERE claim_id = '{claim_id}'
+                    AND user_id='{user_id}'
             """
 
             results = self._execute_query(user_id, query)
@@ -321,6 +323,8 @@ class SecureAthenaClaimsTools:
                     COUNT(CASE WHEN claim_status = 'approved' THEN 1 END) as approved_claims,
                     COUNT(CASE WHEN claim_status = 'denied' THEN 1 END) as denied_claims
                 FROM {self.database_name}.claims
+                WHERE 1=1
+                    AND user_id='{user_id}'
             """
 
             results = self._execute_query(user_id, query)

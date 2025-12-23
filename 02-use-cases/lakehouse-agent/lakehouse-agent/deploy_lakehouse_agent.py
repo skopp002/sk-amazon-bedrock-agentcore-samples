@@ -17,20 +17,8 @@ Usage:
 """
 
 import sys
-from pathlib import Path
 import boto3
 import json
-
-# Add parent directory to path to import config
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from config import config
-
-# Configuration from SSM
-REGION = config.AWS_REGION
-GATEWAY_ARN = config.GATEWAY_ARN
-COGNITO_USER_POOL_ID = config.COGNITO_USER_POOL_ID
-COGNITO_APP_CLIENT_ID = config.COGNITO_APP_CLIENT_ID
 
 try:
     from bedrock_agentcore_starter_toolkit import Runtime
@@ -40,11 +28,98 @@ except ImportError:
     sys.exit(1)
 
 
-def create_agent_role():
+class SSMConfig:
+    """Load configuration from SSM Parameter Store."""
+    
+    def __init__(self):
+        """Initialize and load configuration from SSM."""
+        # Get region from boto3 session
+        session = boto3.Session()
+        self.region = session.region_name
+        
+        self.ssm = boto3.client('ssm', region_name=self.region)
+        self.sts = boto3.client('sts', region_name=self.region)
+        
+        # Get account ID
+        self.account_id = self.sts.get_caller_identity()['Account']
+        
+        print(f"✅ Using AWS configuration")
+        print(f"   Region: {self.region}")
+        print(f"   Account: {self.account_id}")
+        
+        # Load configuration from SSM
+        print(f"\n🔍 Loading configuration from SSM Parameter Store...")
+        self.gateway_arn = self._get_parameter('/app/lakehouse-agent/gateway-arn', required=False)
+        self.cognito_user_pool_id = self._get_parameter('/app/lakehouse-agent/cognito-user-pool-id', required=False)
+        self.cognito_app_client_id = self._get_parameter('/app/lakehouse-agent/cognito-app-client-id', required=False)
+        
+        if self.gateway_arn:
+            print(f"   ✅ Gateway ARN: {self.gateway_arn}")
+        else:
+            print(f"   ⚠️  Gateway ARN not configured")
+        
+        if self.cognito_user_pool_id and self.cognito_app_client_id:
+            print(f"   ✅ Cognito configured")
+        else:
+            print(f"   ⚠️  Cognito not configured - will use IAM authentication")
+    
+    def _get_parameter(self, parameter_name: str, required: bool = True) -> str:
+        """Get parameter value from SSM Parameter Store."""
+        try:
+            response = self.ssm.get_parameter(Name=parameter_name)
+            return response['Parameter']['Value']
+        except self.ssm.exceptions.ParameterNotFound:
+            if required:
+                print(f"❌ SSM parameter {parameter_name} not found")
+                print(f"   Please run the setup scripts first")
+                sys.exit(1)
+            return None
+        except Exception as e:
+            if required:
+                print(f"❌ Error retrieving parameter {parameter_name}: {e}")
+                sys.exit(1)
+            return None
+    
+    def store_agent_parameters(self, runtime_arn: str, runtime_id: str):
+        """Store Lakehouse Agent runtime information in SSM Parameter Store."""
+        print("\n💾 Storing agent configuration in SSM Parameter Store...")
+        
+        parameters = [
+            {
+                'name': '/app/lakehouse-agent/agent-runtime-arn',
+                'value': runtime_arn,
+                'description': 'Lakehouse Agent runtime ARN on AgentCore'
+            },
+            {
+                'name': '/app/lakehouse-agent/agent-runtime-id',
+                'value': runtime_id,
+                'description': 'Lakehouse Agent runtime ID on AgentCore'
+            },
+            {
+                'name': '/app/lakehouse-agent/agent-name',
+                'value': 'lakehouse_agent',
+                'description': 'Lakehouse Agent name'
+            }
+        ]
+        
+        for param in parameters:
+            try:
+                self.ssm.put_parameter(
+                    Name=param['name'],
+                    Value=param['value'],
+                    Description=param['description'],
+                    Type='String',
+                    Overwrite=True
+                )
+                print(f"✅ Stored parameter: {param['name']} = {param['value']}")
+            except Exception as e:
+                print(f"❌ Error storing parameter {param['name']}: {e}")
+                raise
+
+
+def create_agent_role(config: SSMConfig):
     """Create IAM role for Lakehouse Agent Runtime execution."""
-    iam = boto3.client('iam', region_name=REGION)
-    sts = boto3.client('sts', region_name=REGION)
-    account_id = sts.get_caller_identity()['Account']
+    iam = boto3.client('iam', region_name=config.region)
     
     role_name = 'AgentCoreRuntimeRole-lakehouse-agent'
     
@@ -80,16 +155,17 @@ def create_agent_role():
                     "bedrock-agentcore:InvokeGateway",
                     "bedrock-agentcore:GetGateway"
                 ],
-                "Resource": f"arn:aws:bedrock-agentcore:{REGION}:{account_id}:gateway/*"
+                "Resource": f"arn:aws:bedrock-agentcore:{config.region}:{config.account_id}:gateway/*"
             },
             {
                 "Effect": "Allow",
                 "Action": [
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents"
+                    "logs:*",
+                    "xray:*"
                 ],
-                "Resource": "arn:aws:logs:*:*:*"
+                "Resource": [
+                    "*"
+                ]
             },
             {
                 "Effect": "Allow",
@@ -100,6 +176,14 @@ def create_agent_role():
                     "ecr:BatchGetImage"
                 ],
                 "Resource": "*"
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "ssm:GetParameter",
+                    "ssm:GetParameters"
+                ],
+                "Resource": f"arn:aws:ssm:{config.region}:{config.account_id}:parameter/app/lakehouse-agent/*"
             }
         ]
     }
@@ -141,21 +225,23 @@ def create_agent_role():
         return role_arn
 
 
-def deploy_to_runtime(role_arn):
+def deploy_to_runtime(config: SSMConfig, role_arn: str):
     """Deploy lakehouse agent to AgentCore Runtime using starter toolkit."""
     runtime_name = 'lakehouse_agent'  # Must use underscores, not hyphens
     
     try:
         print(f"\n🚀 Deploying Lakehouse Agent to AgentCore Runtime...")
         print(f"   Name: {runtime_name}")
-        print(f"   Region: {REGION}")
+        print(f"   Region: {config.region}")
         print(f"   This will build a Docker container and deploy it...")
         
         # Build environment variables
         env_vars = {
-            'GATEWAY_ARN': GATEWAY_ARN,
-            'AWS_REGION': REGION
+            'AWS_REGION': config.region
         }
+        
+        if config.gateway_arn:
+            env_vars['GATEWAY_ARN'] = config.gateway_arn
         
         print(f"\n📋 Environment variables:")
         for key, value in env_vars.items():
@@ -176,23 +262,23 @@ def deploy_to_runtime(role_arn):
             'execution_role': role_name,  # Use role name, not ARN
             'auto_create_ecr': True,
             'requirements_file': "requirements.txt",
-            'region': REGION,
+            'region': config.region,
             # Note: Not specifying protocol - will use default HTTP protocol for JWT auth
             'agent_name': runtime_name
         }
         
         # Add JWT authentication configuration if Cognito is configured
-        if COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID:
+        if config.cognito_user_pool_id and config.cognito_app_client_id:
             print(f"   Configuring JWT authentication...")
-            issuer = f'https://cognito-idp.{REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}'
+            issuer = f'https://cognito-idp.{config.region}.amazonaws.com/{config.cognito_user_pool_id}'
             discovery_url = f'{issuer}/.well-known/openid-configuration'
             
             print(f"   Discovery URL: {discovery_url}")
-            print(f"   Allowed Clients: {COGNITO_APP_CLIENT_ID}")
+            print(f"   Allowed Clients: {config.cognito_app_client_id}")
             
             config_params['authorizer_configuration'] = {
                 'customJWTAuthorizer': {
-                    'allowedClients': [COGNITO_APP_CLIENT_ID],
+                    'allowedClients': [config.cognito_app_client_id],
                     'discoveryUrl': discovery_url
                 }
             }
@@ -234,49 +320,19 @@ def deploy_to_runtime(role_arn):
         raise
 
 
-def save_to_ssm(updates):
-    """
-    Save deployment outputs to SSM Parameter Store.
-    
-    Args:
-        updates: Dictionary of parameter names and values to save
-    """
-    import boto3
-    from botocore.exceptions import ClientError
-    
-    ssm_client = boto3.client('ssm')
-    
-    print(f"\n💾 Saving deployment outputs to SSM Parameter Store...")
-    
-    for key, value in updates.items():
-        # Convert to SSM parameter name (lh_ prefix, lowercase)
-        ssm_param_name = f"lh_{key.lower()}"
-        
-        try:
-            ssm_client.put_parameter(
-                Name=ssm_param_name,
-                Value=value,
-                Type='String',
-                Overwrite=True,
-                Description=f"Lakehouse agent deployment output: {key}"
-            )
-            print(f"  ✅ Saved {ssm_param_name}")
-        except ClientError as e:
-            print(f"  ⚠️  Failed to save {ssm_param_name}: {e}")
-    
-    print(f"✅ Deployment outputs saved to SSM Parameter Store")
-
-
 def main():
     """Main deployment function."""
     print("=" * 70)
     print("Lakehouse Data Agent Deployment to AgentCore Runtime")
     print("=" * 70)
     
+    # Load configuration from SSM
+    config = SSMConfig()
+    
     # Validate configuration
     print("\n🔍 Validating configuration...")
     
-    if not GATEWAY_ARN:
+    if not config.gateway_arn:
         print("\n⚠️  Warning: GATEWAY_ARN not set in SSM Parameter Store")
         print("   The agent will not be able to access Gateway tools")
         response = input("\nProceed anyway? (yes/no): ")
@@ -288,8 +344,8 @@ def main():
     
     # Print configuration summary
     print(f"\n📋 Configuration:")
-    print(f"   Region: {REGION}")
-    print(f"   Gateway ARN: {GATEWAY_ARN or 'Not configured'}")
+    print(f"   Region: {config.region}")
+    print(f"   Gateway ARN: {config.gateway_arn or 'Not configured'}")
     
     # Confirm deployment
     response = input("\nProceed with deployment? (yes/no): ")
@@ -302,44 +358,42 @@ def main():
         print("\n" + "=" * 70)
         print("Step 1: Creating IAM Role")
         print("=" * 70)
-        role_arn = create_agent_role()
+        role_arn = create_agent_role(config)
         
         # Step 2: Deploy to runtime
         print("\n" + "=" * 70)
         print("Step 2: Deploying to AgentCore Runtime")
         print("=" * 70)
-        result = deploy_to_runtime(role_arn)
+        result = deploy_to_runtime(config, role_arn)
         
-        # Step 3: Save deployment outputs to SSM Parameter Store
-        ssm_updates = {
-            'LAKEHOUSE_AGENT_RUNTIME_ARN': result['runtime_arn'],
-            'LAKEHOUSE_AGENT_RUNTIME_ID': result['runtime_id'],
-            'LAKEHOUSE_AGENT_NAME': 'lakehouse_agent'
-        }
-        save_to_ssm(ssm_updates)
+        # Step 3: Store agent parameters in SSM
+        print("\n" + "=" * 70)
+        print("Step 3: Storing Agent Configuration")
+        print("=" * 70)
+        config.store_agent_parameters(result['runtime_arn'], result['runtime_id'])
         
         # Print summary
         print("\n" + "=" * 70)
         print("Deployment Complete!")
         print("=" * 70)
         
-        print("\n✅ Deployment outputs saved to SSM Parameter Store:")
-        print(f"   lh_lakehouse_agent_runtime_arn = {result['runtime_arn']}")
-        print(f"   lh_lakehouse_agent_runtime_id = {result['runtime_id']}")
-        print(f"   lh_lakehouse_agent_name = lakehouse_agent")
+        print("\n✅ Agent configuration stored in SSM Parameter Store:")
+        print(f"   /app/lakehouse-agent/agent-runtime-arn")
+        print(f"   /app/lakehouse-agent/agent-runtime-id")
+        print(f"   /app/lakehouse-agent/agent-name")
         
         # Print JWT configuration status
-        if COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID:
+        if config.cognito_user_pool_id and config.cognito_app_client_id:
             print("\n✅ JWT Authentication Configured:")
-            print(f"   Discovery URL: https://cognito-idp.{REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/openid-configuration")
-            print(f"   Allowed Clients: {COGNITO_APP_CLIENT_ID}")
+            print(f"   Discovery URL: https://cognito-idp.{config.region}.amazonaws.com/{config.cognito_user_pool_id}/.well-known/openid-configuration")
+            print(f"   Allowed Clients: {config.cognito_app_client_id}")
             print(f"   Authorization header: Enabled for OAuth token propagation")
         else:
             print("\n⚠️  JWT Authentication Not Configured:")
             print("   Runtime deployed with IAM authentication")
             print("   To enable JWT auth, set COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID in SSM and redeploy")
         
-        print("\n🔗 Next Steps:")
+        print("\n📋 Next Steps:")
         print("   1. Test the agent: python ../test_agent_simple.py")
         print("   2. Test E2E flow: python ../test_e2e_flow.py")
         print("   3. Deploy the Streamlit UI: cd ../streamlit-ui && streamlit run streamlit_app.py")

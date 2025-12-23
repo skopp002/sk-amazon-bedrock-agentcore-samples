@@ -13,11 +13,14 @@ This script sets up data governance infrastructure including:
 Prerequisites:
 - AWS credentials configured
 - Lake Formation already set up (run setup_lake_formation.py first)
-- Athena database exists (run setup_athena_with_config.py first)
-- config.py with required values
+- Athena database exists (run setup_athena.py first)
+- S3 bucket name stored in SSM Parameter Store
 
 Usage:
-    python setup_sagemaker_unified_studio.py
+    python setup_sagemaker_unified_studio.py --domain-name DOMAIN_NAME
+
+Arguments:
+    --domain-name: (Required) Name for the DataZone domain
 
 Outputs ARNs to update in SSM Parameter Store:
 - DATAZONE_DOMAIN_ID
@@ -30,30 +33,87 @@ import boto3
 import json
 import sys
 import time
+import argparse
 from pathlib import Path
 from typing import Dict, Any, Optional
-
-# Add parent directory to path to import config
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import config
 
 
 class SageMakerUnifiedStudioSetup:
     """Sets up SageMaker Unified Studio (DataZone) for data governance."""
 
-    def __init__(self):
-        """Initialize AWS clients and configuration."""
-        self.region = config.AWS_REGION
-        self.account_id = config.AWS_ACCOUNT_ID
-        self.athena_database = config.ATHENA_DATABASE_NAME
-        self.s3_bucket = config.S3_BUCKET_NAME
-
+    def __init__(self, domain_name: str):
+        """
+        Initialize AWS clients and configuration.
+        
+        Args:
+            domain_name: Name for the DataZone domain
+        """
+        # Get region and account from boto3 session
+        session = boto3.Session()
+        self.region = session.region_name
+        
         # Initialize AWS clients
+        sts_client = boto3.client('sts')
+        self.account_id = sts_client.get_caller_identity()['Account']
+        
+        self.ssm = boto3.client('ssm', region_name=self.region)
         self.datazone = boto3.client('datazone', region_name=self.region)
         self.iam = boto3.client('iam', region_name=self.region)
-        self.sts = boto3.client('sts', region_name=self.region)
-
+        self.sts = sts_client
+        
+        # Get configuration from SSM Parameter Store
+        self.s3_bucket = self._get_ssm_parameter('/app/lakehouse-agent/s3-bucket-name')
+        self.athena_database = self._get_ssm_parameter('/app/lakehouse-agent/database-name')
+        self.domain_name = domain_name
+        
         print(f"Initialized SageMaker Unified Studio setup for account {self.account_id}")
+        print(f"Region: {self.region}")
+        print(f"S3 Bucket: {self.s3_bucket}")
+        print(f"Athena Database: {self.athena_database}")
+        print(f"Domain Name: {self.domain_name}")
+
+    def _get_ssm_parameter(self, parameter_name: str) -> str:
+        """
+        Get parameter value from SSM Parameter Store.
+        
+        Args:
+            parameter_name: SSM parameter name
+            
+        Returns:
+            Parameter value
+        """
+        try:
+            response = self.ssm.get_parameter(Name=parameter_name)
+            return response['Parameter']['Value']
+        except self.ssm.exceptions.ParameterNotFound:
+            print(f"❌ SSM parameter {parameter_name} not found")
+            print(f"   Please run setup_athena.py first to create the required parameters")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error retrieving parameter {parameter_name}: {e}")
+            sys.exit(1)
+
+    def _store_ssm_parameter(self, parameter_name: str, parameter_value: str, description: str):
+        """
+        Store parameter value in SSM Parameter Store.
+        
+        Args:
+            parameter_name: SSM parameter name
+            parameter_value: Parameter value to store
+            description: Parameter description
+        """
+        try:
+            self.ssm.put_parameter(
+                Name=parameter_name,
+                Value=parameter_value,
+                Description=description,
+                Type='String',
+                Overwrite=True
+            )
+            print(f"✅ Stored parameter: {parameter_name} = {parameter_value}")
+        except Exception as e:
+            print(f"❌ Error storing parameter {parameter_name}: {e}")
+            raise
 
     def create_domain_execution_role(self) -> str:
         """
@@ -141,13 +201,11 @@ class SageMakerUnifiedStudioSetup:
         Returns:
             Domain ID
         """
-        domain_name = config.DATAZONE_DOMAIN_NAME or 'lakehouse-domain'
-
         try:
-            print(f"Creating DataZone domain: {domain_name}")
+            print(f"Creating DataZone domain: {self.domain_name}")
             response = self.datazone.create_domain(
-                name=domain_name,
-                description='Health lakehouse data data governance and cataloging',
+                name=self.domain_name,
+                description='Health lakehouse data governance and cataloging',
                 domainExecutionRole=role_arn
                 # Note: kmsKeyIdentifier omitted to use default encryption
                 # If you need a specific KMS key, provide the full ARN:
@@ -164,10 +222,13 @@ class SageMakerUnifiedStudioSetup:
 
             return domain_id
 
+        except self.datazone.exceptions.ConflictException as e:
+            print(f"ℹ️  Domain already exists (ConflictException), listing domains to find ID")
+            return self._find_existing_domain(self.domain_name)
         except Exception as e:
-            if 'already exists' in str(e).lower():
+            if 'conflict' in str(e).lower() or 'already exists' in str(e).lower():
                 print(f"ℹ️  Domain already exists, listing domains to find ID")
-                return self._find_existing_domain(domain_name)
+                return self._find_existing_domain(self.domain_name)
             raise
 
     def _wait_for_domain_available(self, domain_id: str, timeout: int = 300):
@@ -210,7 +271,7 @@ class SageMakerUnifiedStudioSetup:
         Returns:
             Project ID
         """
-        project_name = config.DATAZONE_PROJECT_NAME or 'health-lakehouse'
+        project_name = 'health-lakehouse'
 
         try:
             print(f"Creating DataZone project: {project_name}")
@@ -224,8 +285,11 @@ class SageMakerUnifiedStudioSetup:
             print(f"✅ Created DataZone project: {project_id}")
             return project_id
 
+        except self.datazone.exceptions.ConflictException as e:
+            print(f"ℹ️  Project already exists (ConflictException), listing to find ID")
+            return self._find_existing_project(domain_id, project_name)
         except Exception as e:
-            if 'already exists' in str(e).lower():
+            if 'conflict' in str(e).lower() or 'already exists' in str(e).lower():
                 print(f"ℹ️  Project already exists, listing to find ID")
                 return self._find_existing_project(domain_id, project_name)
             raise
@@ -328,7 +392,7 @@ class SageMakerUnifiedStudioSetup:
                 configuration={
                     'athenaConfiguration': {
                         'databaseName': self.athena_database,
-                        'workgroupName': config.ATHENA_WORKGROUP
+                        'workgroupName': 'primary'  # Default workgroup
                     }
                 },
                 enableSetting='ENABLED',
@@ -440,10 +504,67 @@ class SageMakerUnifiedStudioSetup:
 
         return created_terms
 
+    def store_parameters_in_ssm(self, domain_id: str, project_id: str, 
+                                env_id: Optional[str], source_id: Optional[str]):
+        """
+        Store DataZone configuration in SSM Parameter Store.
+        
+        Args:
+            domain_id: DataZone domain ID
+            project_id: Project ID
+            env_id: Environment ID (optional)
+            source_id: Data source ID (optional)
+        """
+        print("\n💾 Storing configuration in SSM Parameter Store...")
+        
+        # Store domain name
+        self._store_ssm_parameter(
+            '/app/lakehouse-agent/datazone-domain-name',
+            self.domain_name,
+            'DataZone domain name for lakehouse governance'
+        )
+        
+        # Store domain ID
+        self._store_ssm_parameter(
+            '/app/lakehouse-agent/datazone-domain-id',
+            domain_id,
+            'DataZone domain ID for lakehouse governance'
+        )
+        
+        # Store project ID
+        self._store_ssm_parameter(
+            '/app/lakehouse-agent/datazone-project-id',
+            project_id,
+            'DataZone project ID for health lakehouse'
+        )
+        
+        # Store environment ID if available
+        if env_id:
+            self._store_ssm_parameter(
+                '/app/lakehouse-agent/datazone-environment-id',
+                env_id,
+                'DataZone environment ID for analytics'
+            )
+        
+        # Store data source ID if available
+        if source_id:
+            self._store_ssm_parameter(
+                '/app/lakehouse-agent/datazone-data-source-id',
+                source_id,
+                'DataZone data source ID for Athena'
+            )
+        
+        # Enable DataZone integration flag
+        self._store_ssm_parameter(
+            '/app/lakehouse-agent/enable-datazone-integration',
+            'true',
+            'Flag to enable DataZone integration'
+        )
+
     def print_summary(self, domain_id: str, project_id: str, env_id: Optional[str],
                      source_id: Optional[str], glossary_terms: Dict[str, str]):
         """
-        Print setup summary with values to add to SSM Parameter Store.
+        Print setup summary with values stored in SSM Parameter Store.
 
         Args:
             domain_id: DataZone domain ID
@@ -456,20 +577,12 @@ class SageMakerUnifiedStudioSetup:
         print("SageMaker Unified Studio Setup Complete!")
         print("=" * 70)
 
-        print("\n📋 Add these values to SSM Parameter Store:\n")
-        print(f"aws ssm put-parameter --name lh_datazone_domain_id --value '{domain_id}' --type String --overwrite")
-        print(f"aws ssm put-parameter --name lh_datazone_project_id --value '{project_id}' --type String --overwrite")
-        if env_id:
-            print(f"aws ssm put-parameter --name lh_datazone_environment_id --value '{env_id}' --type String --overwrite")
-        if source_id:
-            print(f"aws ssm put-parameter --name lh_datazone_data_source_id --value '{source_id}' --type String --overwrite")
-        print(f"aws ssm put-parameter --name lh_enable_datazone_integration --value 'true' --type String --overwrite")
-
         print("\n🔗 Access SageMaker Unified Studio:")
         print(f"https://console.aws.amazon.com/datazone/home?region={self.region}#/domains/{domain_id}")
 
         print("\n✅ Created Resources:")
-        print(f"   • Domain: {domain_id}")
+        print(f"   • Domain Name: {self.domain_name}")
+        print(f"   • Domain ID: {domain_id}")
         print(f"   • Project: {project_id}")
         if env_id:
             print(f"   • Environment: {env_id}")
@@ -477,39 +590,43 @@ class SageMakerUnifiedStudioSetup:
             print(f"   • Data Source: {source_id}")
         print(f"   • Glossary Terms: {len(glossary_terms)}")
 
+        print("\n💾 SSM Parameters Stored:")
+        print(f"   • /app/lakehouse-agent/datazone-domain-name")
+        print(f"   • /app/lakehouse-agent/datazone-domain-id")
+        print(f"   • /app/lakehouse-agent/datazone-project-id")
+        if env_id:
+            print(f"   • /app/lakehouse-agent/datazone-environment-id")
+        if source_id:
+            print(f"   • /app/lakehouse-agent/datazone-data-source-id")
+        print(f"   • /app/lakehouse-agent/enable-datazone-integration")
+
         print("\n📚 Next Steps:")
-        print("   1. Update SSM Parameter Store with the values above")
-        print("   2. Run: python config.py --validate")
-        print("   3. Access SageMaker Unified Studio console to:")
+        print("   1. Access SageMaker Unified Studio console to:")
         print("      - Configure data lineage")
         print("      - Set up access workflows")
         print("      - Explore the data catalog")
-        print("   4. Continue with deployment (Phase 4+)")
+        print("   2. Continue with deployment (Phase 4+)")
 
         print("\n" + "=" * 70)
 
 
 def main():
     """Main setup function."""
+    parser = argparse.ArgumentParser(
+        description='Setup SageMaker Unified Studio (DataZone) for data governance'
+    )
+    parser.add_argument(
+        '--domain-name',
+        required=True,
+        help='Name for the DataZone domain'
+    )
+    
+    args = parser.parse_args()
+    
     print("=" * 70)
     print("SageMaker Unified Studio (DataZone) Setup")
     print("Lakehouse Agent - Data Governance Layer")
     print("=" * 70)
-
-    # Validate configuration
-    if not config.AWS_ACCOUNT_ID or not config.S3_BUCKET_NAME:
-        print("\n❌ Error: Missing required configuration")
-        print("   Please ensure SSM Parameter Store has:")
-        print("   - lh_aws_account_id (auto-detected from STS)")
-        print("   - lh_s3_bucket_name")
-        print("   - ATHENA_DATABASE_NAME")
-        sys.exit(1)
-
-    print(f"\n📋 Configuration:")
-    print(f"   AWS Account: {config.AWS_ACCOUNT_ID}")
-    print(f"   Region: {config.AWS_REGION}")
-    print(f"   Athena Database: {config.ATHENA_DATABASE_NAME}")
-    print(f"   S3 Bucket: {config.S3_BUCKET_NAME}")
 
     # Confirm setup
     response = input("\nProceed with SageMaker Unified Studio setup? (yes/no): ")
@@ -518,7 +635,7 @@ def main():
         sys.exit(0)
 
     # Initialize setup
-    setup = SageMakerUnifiedStudioSetup()
+    setup = SageMakerUnifiedStudioSetup(domain_name=args.domain_name)
 
     try:
         # Step 1: Create IAM role
@@ -562,6 +679,12 @@ def main():
         print("Step 7: Creating Business Glossary")
         print("=" * 70)
         glossary_terms = setup.create_business_glossary(domain_id)
+
+        # Step 8: Store configuration in SSM Parameter Store
+        print("\n" + "=" * 70)
+        print("Step 8: Storing Configuration in SSM")
+        print("=" * 70)
+        setup.store_parameters_in_ssm(domain_id, project_id, env_id, source_id)
 
         # Print summary
         setup.print_summary(domain_id, project_id, env_id, source_id, glossary_terms)

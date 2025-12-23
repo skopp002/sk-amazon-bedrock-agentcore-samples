@@ -8,8 +8,12 @@ import sys
 
 def create_lambda_role():
     """Create IAM role for Lambda execution."""
-    iam = boto3.client('iam')
-    sts = boto3.client('sts')
+    session = boto3.Session()
+    region = session.region_name
+    
+    iam = boto3.client('iam', region_name=region)
+    sts = boto3.client('sts', region_name=region)
+    ssm = boto3.client('ssm', region_name=region)
     
     account_id = sts.get_caller_identity()['Account']
     role_name = 'InsuranceClaimsGatewayInterceptorRole'
@@ -46,6 +50,17 @@ def create_lambda_role():
         )
         print(f"✅ Attached AWSLambdaBasicExecutionRole policy")
         
+        # Store role ARN in SSM Parameter Store
+        print(f"💾 Storing role ARN in SSM Parameter Store...")
+        ssm.put_parameter(
+            Name='/app/lakehouse-agent/interceptor-lambda-role-arn',
+            Value=role_arn,
+            Description='IAM role ARN for Gateway Interceptor Lambda',
+            Type='String',
+            Overwrite=True
+        )
+        print(f"✅ Stored parameter: /app/lakehouse-agent/interceptor-lambda-role-arn")
+        
         return role_arn
         
     except iam.exceptions.EntityAlreadyExistsException:
@@ -53,6 +68,18 @@ def create_lambda_role():
         response = iam.get_role(RoleName=role_name)
         role_arn = response['Role']['Arn']
         print(f"✅ Using existing role: {role_arn}")
+        
+        # Store role ARN in SSM Parameter Store
+        print(f"💾 Storing role ARN in SSM Parameter Store...")
+        ssm.put_parameter(
+            Name='/app/lakehouse-agent/interceptor-lambda-role-arn',
+            Value=role_arn,
+            Description='IAM role ARN for Gateway Interceptor Lambda',
+            Type='String',
+            Overwrite=True
+        )
+        print(f"✅ Stored parameter: /app/lakehouse-agent/interceptor-lambda-role-arn")
+        
         return role_arn
     except Exception as e:
         print(f"❌ Error creating role: {e}")
@@ -60,6 +87,6 @@ def create_lambda_role():
 
 if __name__ == '__main__':
     role_arn = create_lambda_role()
-    print(f"\n📝 Lambda Role ARN: {role_arn}")
-    print(f"\nUse this ARN in your Lambda create-function command:")
-    print(f"  --role {role_arn}")
+    print(f"\n✅ Lambda Role ARN stored in SSM Parameter Store")
+    print(f"   /app/lakehouse-agent/interceptor-lambda-role-arn = {role_arn}")
+

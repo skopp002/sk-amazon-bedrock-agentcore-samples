@@ -24,7 +24,11 @@ import sys
 import os
 from typing import Any, Dict, Optional
 import boto3
+from pathlib import Path
 from mcp.server.fastmcp import FastMCP
+
+# Import aws_session_utils from local directory (copied during build)
+from aws_session_utils import get_aws_session
 
 # Initialize MCP server
 mcp = FastMCP(host="0.0.0.0", stateless_http=True)
@@ -51,51 +55,49 @@ def get_config() -> Dict[str, Optional[str]]:
         return _config_cache
     
     config = {}
-    
-    # Get region from boto3 session
+
+    # Get validated AWS session with SSO support
+    # Note: verbose=False to reduce logging in Lambda/container environments
     try:
-        session = boto3.Session()
-        config['region'] = session.region_name
+        session, region, account_id = get_aws_session(verbose=False)
+        config['region'] = region
+        config['account_id'] = account_id
         print(f"✅ Region: {config['region']}")
+        print(f"✅ Account ID: {config['account_id']}")
     except Exception as e:
-        print(f"⚠️  Could not detect region: {e}")
-        config['region'] = 'us-west-1'
+        print(f"❌ Failed to initialize AWS session: {e}")
+        raise
+
+    ssm = session.client('ssm', region_name=config['region'])
     
-    # Get account ID
-    try:
-        sts = boto3.client('sts', region_name=config['region'])
-        config['account_id'] = sts.get_caller_identity()['Account']
-    except Exception as e:
-        print(f"⚠️  Could not get account ID: {e}")
-        config['account_id'] = None
-    
-    ssm = boto3.client('ssm', region_name=config['region'])
-    
-    def get_param(name: str, env_var: str = None, default: str = None) -> Optional[str]:
-        if env_var and env_var in os.environ:
-            value = os.environ[env_var]
-            print(f"✅ {name} from environment: {value}")
-            return value
-        
+    def get_param(name: str, default: str = None, required: bool = True) -> Optional[str]:
+        """Get parameter from SSM Parameter Store only. No environment variable fallback."""
         try:
             response = ssm.get_parameter(Name=f'/app/lakehouse-agent/{name}')
             value = response['Parameter']['Value']
             print(f"✅ {name} from SSM: {value}")
             return value
         except ssm.exceptions.ParameterNotFound:
-            if default:
+            if default is not None:
                 print(f"ℹ️  {name} using default: {default}")
                 return default
+            if required:
+                print(f"❌ Required parameter {name} not found in SSM")
+                raise ValueError(f"Required SSM parameter missing: /app/lakehouse-agent/{name}")
             print(f"⚠️  {name} not found")
             return None
         except Exception as e:
             print(f"❌ Error getting {name}: {e}")
-            return default
+            if default is not None:
+                return default
+            if required:
+                raise
+            return None
     
-    config['s3_bucket_name'] = get_param('s3-bucket-name', 'S3_BUCKET_NAME')
-    config['database_name'] = get_param('database-name', 'ATHENA_DATABASE_NAME')
-    config['rls_role_arn'] = get_param('rls-role-arn', 'RLS_ROLE_ARN')
-    config['security_mode'] = get_param('security-mode', 'SECURITY_MODE', 'lakeformation')
+    config['s3_bucket_name'] = get_param('s3-bucket-name')
+    config['database_name'] = get_param('database-name')
+    config['rls_role_arn'] = get_param('rls-role-arn')
+    config['security_mode'] = get_param('security-mode', default='lakeformation', required=False)
     config['log_level'] = os.environ.get('LOG_LEVEL', 'INFO')
     
     if config['s3_bucket_name']:

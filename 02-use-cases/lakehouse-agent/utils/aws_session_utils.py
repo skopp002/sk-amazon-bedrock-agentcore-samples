@@ -220,8 +220,6 @@ def _detect_region(
             print(f"🌍 Using region from {env_var}: {region}")
         return region
 
-    # Default to us-east-1
-    region = 'us-east-1'
     if verbose:
         print(f"⚠️  No AWS region configured, using default: {region}")
         print("   To set your region:")

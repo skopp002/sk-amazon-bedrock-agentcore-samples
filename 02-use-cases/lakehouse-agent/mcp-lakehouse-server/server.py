@@ -22,25 +22,31 @@ Configuration:
 
 import sys
 import os
+import logging
 from typing import Any, Dict, Optional
 import boto3
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+logger.info("=" * 70)
+logger.info("🚀 SERVER.PY INITIALIZATION - VERSION 2026-01-08-v3")
+logger.info("=" * 70)
 
 # Import aws_session_utils from local directory (copied during build)
 from aws_session_utils import get_aws_session
 
 # Initialize MCP server
 mcp = FastMCP(host="0.0.0.0", stateless_http=True)
-
-print("=" * 70)
-print("🚀 SERVER.PY INITIALIZATION - VERSION 2026-01-08-v2")
-print("=" * 70)
+logger.info("✅ FastMCP initialized")
 
 # PRODUCTION ONLY: Use Lake Formation row-level security
 from athena_tools_secure import SecureAthenaClaimsTools as AthenaTools
 
-print("🔒 Using Lake Formation row-level security (production mode)")
+logger.info("🔒 Using Lake Formation row-level security (production mode)")
 
 # Global Athena tools instance
 athena_tools = None
@@ -66,10 +72,10 @@ def get_config() -> Dict[str, Optional[str]]:
         session, region, account_id = get_aws_session(verbose=False)
         config['region'] = region
         config['account_id'] = account_id
-        print(f"✅ Region: {config['region']}")
-        print(f"✅ Account ID: {config['account_id']}")
+        logger.info(f"✅ Region: {config['region']}")
+        logger.info(f"✅ Account ID: {config['account_id']}")
     except Exception as e:
-        print(f"❌ Failed to initialize AWS session: {e}")
+        logger.error(f"❌ Failed to initialize AWS session: {e}")
         raise
 
     ssm = session.client('ssm', region_name=config['region'])
@@ -79,19 +85,19 @@ def get_config() -> Dict[str, Optional[str]]:
         try:
             response = ssm.get_parameter(Name=f'/app/lakehouse-agent/{name}')
             value = response['Parameter']['Value']
-            print(f"✅ {name} from SSM: {value}")
+            logger.info(f"✅ {name} from SSM: {value}")
             return value
         except ssm.exceptions.ParameterNotFound:
             if default is not None:
-                print(f"ℹ️  {name} using default: {default}")
+                logger.info(f"ℹ️  {name} using default: {default}")
                 return default
             if required:
-                print(f"❌ Required parameter {name} not found in SSM")
+                logger.error(f"❌ Required parameter {name} not found in SSM")
                 raise ValueError(f"Required SSM parameter missing: /app/lakehouse-agent/{name}")
-            print(f"⚠️  {name} not found")
+            logger.warning(f"⚠️  {name} not found")
             return None
         except Exception as e:
-            print(f"❌ Error getting {name}: {e}")
+            logger.error(f"❌ Error getting {name}: {e}")
             if default is not None:
                 return default
             if required:
@@ -131,12 +137,12 @@ def validate_config(config: Dict[str, Optional[str]]) -> bool:
             missing.append(display_name)
     
     if missing:
-        print(f"❌ Missing required configuration: {', '.join(missing)}")
+        logger.error(f"❌ Missing required configuration: {', '.join(missing)}")
         return False
     
     if config['security_mode'] != 'lakeformation':
-        print(f"❌ Invalid security mode: {config['security_mode']}")
-        print("   Only 'lakeformation' is supported")
+        logger.error(f"❌ Invalid security mode: {config['security_mode']}")
+        logger.info("   Only 'lakeformation' is supported")
         return False
     
     return True
@@ -147,10 +153,10 @@ def get_athena_tools():
     if athena_tools is None:
         config = get_config()
         
-        print("Initializing Athena tools with Lake Formation RLS...")
-        print(f"  Region: {config['region']}")
-        print(f"  Database: {config['database_name']}")
-        print(f"  S3 Output: {config['s3_output_location']}")
+        logger.info("Initializing Athena tools with Lake Formation RLS...")
+        logger.info(f"  Region: {config['region']}")
+        logger.info(f"  Database: {config['database_name']}")
+        logger.info(f"  S3 Output: {config['s3_output_location']}")
 
         if not config['rls_role_arn']:
             raise ValueError(
@@ -158,7 +164,7 @@ def get_athena_tools():
                 "   Lake Formation is required for production security."
             )
 
-        print(f"  RLS Role: {config['rls_role_arn']}")
+        logger.info(f"  RLS Role: {config['rls_role_arn']}")
 
         athena_tools = AthenaTools(
             region=config['region'],
@@ -167,7 +173,7 @@ def get_athena_tools():
             rls_role_arn=config['rls_role_arn']
         )
 
-        print("✅ Athena tools initialized with Lake Formation RLS")
+        logger.info("✅ Athena tools initialized with Lake Formation RLS")
 
     return athena_tools
 
@@ -178,18 +184,18 @@ def get_user_id_with_fallback(context_arg: Dict[str, Any] = None) -> str:
     user_id = None
     
     if context_arg:
-        print(f"📋 Context argument received: {context_arg}")
+        logger.info(f"📋 Context argument received: {context_arg}")
         user_id = context_arg.get('user_id')
         if user_id:
-            print(f"   Got user_id from context argument: {user_id}")
+            logger.info(f"   Got user_id from context argument: {user_id}")
             return user_id
     
     if config['local_development']:
         user_id = config['test_user']
-        print(f"⚠️  Using test user for local development: {user_id}")
+        logger.warning(f"⚠️  Using test user for local development: {user_id}")
         return user_id
     
-    print("❌ User identity not found in request")
+    logger.error("❌ User identity not found in request")
     return None
 
 
@@ -205,20 +211,20 @@ def query_claims(
     context: Dict[str, Any] = None
 ) -> Dict[str, Any]:
     """Query lakehouse data for the authenticated user."""
-    print("=" * 60)
-    print("🔧 TOOL INVOKED: query_claims")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("🔧 TOOL INVOKED: query_claims")
+    logger.info("=" * 60)
     
-    print("📥 INPUT PARAMETERS:")
-    print(f"   claim_status: {claim_status}")
-    print(f"   claim_type: {claim_type}")
-    print(f"   start_date: {start_date}")
-    print(f"   end_date: {end_date}")
-    print(f"   context: {context}")
+    logger.info("📥 INPUT PARAMETERS:")
+    logger.info(f"   claim_status: {claim_status}")
+    logger.info(f"   claim_type: {claim_type}")
+    logger.info(f"   start_date: {start_date}")
+    logger.info(f"   end_date: {end_date}")
+    logger.info(f"   context: {context}")
     
     try:
         user_id = get_user_id_with_fallback(context)
-        print(f"👤 USER ID: {user_id}")
+        logger.info(f"👤 USER ID: {user_id}")
         
         if not user_id:
             return {"success": False, "error": "User identity not found in request"}
@@ -230,27 +236,27 @@ def query_claims(
             'end_date': end_date
         }.items() if v is not None}
         
-        print(f"🔍 FILTERS: {filters}")
+        logger.info(f"🔍 FILTERS: {filters}")
 
         tools = get_athena_tools()
         result = tools.query_claims(user_id, filters if filters else None)
         
-        print("📤 OUTPUT:")
-        print(f"   success: {result.get('success', 'N/A')}")
+        logger.info("📤 OUTPUT:")
+        logger.info(f"   success: {result.get('success', 'N/A')}")
         if result.get('success'):
             claims_count = len(result.get('claims', []))
-            print(f"   claims_count: {claims_count}")
+            logger.info(f"   claims_count: {claims_count}")
         else:
-            print(f"   error: {result.get('error', 'N/A')}")
+            logger.info(f"   error: {result.get('error', 'N/A')}")
         
-        print("=" * 60)
+        logger.info("=" * 60)
         return result
 
     except Exception as e:
-        print(f"❌ ERROR in query_claims: {str(e)}")
+        logger.error(f"❌ ERROR in query_claims: {str(e)}")
         import traceback
-        print(f"   Stack trace: {traceback.format_exc()}")
-        print("=" * 60)
+        logger.info(f"   Stack trace: {traceback.format_exc()}")
+        logger.info("=" * 60)
         return {"success": False, "error": str(e)}
 
 
@@ -260,17 +266,17 @@ def query_claims(
 )
 def get_claim_details(claim_id: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Get details of a specific claim."""
-    print("=" * 60)
-    print("🔧 TOOL INVOKED: get_claim_details")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("🔧 TOOL INVOKED: get_claim_details")
+    logger.info("=" * 60)
     
-    print("📥 INPUT PARAMETERS:")
-    print(f"   claim_id: {claim_id}")
-    print(f"   context: {context}")
+    logger.info("📥 INPUT PARAMETERS:")
+    logger.info(f"   claim_id: {claim_id}")
+    logger.info(f"   context: {context}")
     
     try:
         user_id = get_user_id_with_fallback(context)
-        print(f"👤 USER ID: {user_id}")
+        logger.info(f"👤 USER ID: {user_id}")
         
         if not user_id:
             return {"success": False, "error": "User identity not found in request"}
@@ -278,23 +284,23 @@ def get_claim_details(claim_id: str, context: Dict[str, Any] = None) -> Dict[str
         tools = get_athena_tools()
         result = tools.get_claim_details(user_id, claim_id)
         
-        print("📤 OUTPUT:")
-        print(f"   success: {result.get('success', 'N/A')}")
+        logger.info("📤 OUTPUT:")
+        logger.info(f"   success: {result.get('success', 'N/A')}")
         if result.get('success'):
             claim_data = result.get('claim', {})
-            print(f"   claim_id: {claim_data.get('claim_id', 'N/A')}")
-            print(f"   claim_status: {claim_data.get('claim_status', 'N/A')}")
+            logger.info(f"   claim_id: {claim_data.get('claim_id', 'N/A')}")
+            logger.info(f"   claim_status: {claim_data.get('claim_status', 'N/A')}")
         else:
-            print(f"   error: {result.get('error', 'N/A')}")
+            logger.info(f"   error: {result.get('error', 'N/A')}")
         
-        print("=" * 60)
+        logger.info("=" * 60)
         return result
 
     except Exception as e:
-        print(f"❌ ERROR in get_claim_details: {str(e)}")
+        logger.error(f"❌ ERROR in get_claim_details: {str(e)}")
         import traceback
-        print(f"   Stack trace: {traceback.format_exc()}")
-        print("=" * 60)
+        logger.info(f"   Stack trace: {traceback.format_exc()}")
+        logger.info("=" * 60)
         return {"success": False, "error": str(e)}
 
 
@@ -304,16 +310,16 @@ def get_claim_details(claim_id: str, context: Dict[str, Any] = None) -> Dict[str
 )
 def get_claims_summary(context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Get claims summary for the user."""
-    print("=" * 60)
-    print("🔧 TOOL INVOKED: get_claims_summary")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("🔧 TOOL INVOKED: get_claims_summary")
+    logger.info("=" * 60)
     
-    print("📥 INPUT PARAMETERS:")
-    print(f"   context: {context}")
+    logger.info("📥 INPUT PARAMETERS:")
+    logger.info(f"   context: {context}")
     
     try:
         user_id = get_user_id_with_fallback(context)
-        print(f"👤 USER ID: {user_id}")
+        logger.info(f"👤 USER ID: {user_id}")
         
         if not user_id:
             return {"success": False, "error": "User identity not found in request"}
@@ -321,52 +327,52 @@ def get_claims_summary(context: Dict[str, Any] = None) -> Dict[str, Any]:
         tools = get_athena_tools()
         result = tools.get_claims_summary(user_id)
         
-        print("📤 OUTPUT:")
-        print(f"   success: {result.get('success', 'N/A')}")
+        logger.info("📤 OUTPUT:")
+        logger.info(f"   success: {result.get('success', 'N/A')}")
         if result.get('success'):
             summary = result.get('summary', {})
-            print(f"   total_claims: {summary.get('total_claims', 'N/A')}")
-            print(f"   total_amount: {summary.get('total_amount', 'N/A')}")
-            print(f"   by_status: {summary.get('by_status', 'N/A')}")
+            logger.info(f"   total_claims: {summary.get('total_claims', 'N/A')}")
+            logger.info(f"   total_amount: {summary.get('total_amount', 'N/A')}")
+            logger.info(f"   by_status: {summary.get('by_status', 'N/A')}")
         else:
-            print(f"   error: {result.get('error', 'N/A')}")
+            logger.info(f"   error: {result.get('error', 'N/A')}")
         
-        print("=" * 60)
+        logger.info("=" * 60)
         return result
 
     except Exception as e:
-        print(f"❌ ERROR in get_claims_summary: {str(e)}")
+        logger.error(f"❌ ERROR in get_claims_summary: {str(e)}")
         import traceback
-        print(f"   Stack trace: {traceback.format_exc()}")
-        print("=" * 60)
+        logger.info(f"   Stack trace: {traceback.format_exc()}")
+        logger.info("=" * 60)
         return {"success": False, "error": str(e)}
 
 
 if __name__ == "__main__":
-    print("\n🔍 Validating configuration...")
+    logger.info("\n🔍 Validating configuration...")
     
     config = get_config()
     
     if config['security_mode'] != 'lakeformation':
-        print("\n❌ Error: Only Lake Formation security mode is supported!")
-        print(f"   Current SECURITY_MODE: {config['security_mode']}")
+        logger.info("\n❌ Error: Only Lake Formation security mode is supported!")
+        logger.info(f"   Current SECURITY_MODE: {config['security_mode']}")
         sys.exit(1)
 
     if not validate_config(config):
-        print("\n❌ Configuration is invalid!")
+        logger.info("\n❌ Configuration is invalid!")
         sys.exit(1)
 
     if not config['rls_role_arn']:
-        print("\n❌ Error: Lake Formation RLS is not configured!")
+        logger.info("\n❌ Error: Lake Formation RLS is not configured!")
         sys.exit(1)
 
-    print("✅ Configuration validated")
-    print("🔒 Lake Formation row-level security enabled")
+    logger.info("✅ Configuration validated")
+    logger.info("🔒 Lake Formation row-level security enabled")
 
-    print(f"Starting MCP Server with Lake Formation RLS:")
-    print(f"  Region: {config['region']}")
-    print(f"  Database: {config['database_name']}")
-    print(f"  S3 Output: {config['s3_output_location']}")
-    print(f"  RLS Role: {config['rls_role_arn']}")
+    logger.info(f"Starting MCP Server with Lake Formation RLS:")
+    logger.info(f"  Region: {config['region']}")
+    logger.info(f"  Database: {config['database_name']}")
+    logger.info(f"  S3 Output: {config['s3_output_location']}")
+    logger.info(f"  RLS Role: {config['rls_role_arn']}")
 
     mcp.run(transport="streamable-http")

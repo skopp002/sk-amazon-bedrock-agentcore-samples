@@ -33,6 +33,10 @@ from aws_session_utils import get_aws_session
 # Initialize MCP server
 mcp = FastMCP(host="0.0.0.0", stateless_http=True)
 
+print("=" * 70)
+print("🚀 SERVER.PY INITIALIZATION - VERSION 2026-01-08-v2")
+print("=" * 70)
+
 # PRODUCTION ONLY: Use Lake Formation row-level security
 from athena_tools_secure import SecureAthenaClaimsTools as AthenaTools
 

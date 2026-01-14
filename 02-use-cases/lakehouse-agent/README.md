@@ -224,60 +224,10 @@ Key Points:
 # Python 3.10 or later
 python --version
 
-# AWS CLI configured
-aws configure
-
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### AWS SSO Configuration (If Using SSO)
-
-If your organization uses AWS Single Sign-On (SSO), configure it to avoid token expiration errors:
-
-**Quick Setup**:
-```bash
-# Configure AWS SSO (one-time)
-aws configure sso
-
-# Login before starting work
-aws sso login --profile your-profile-name
-
-# Set profile for boto3
-export AWS_PROFILE=your-profile-name
-```
-
-**For Jupyter Notebooks**, add this at the beginning:
-```python
-import os
-os.environ['AWS_PROFILE'] = 'your-profile-name'
-```
-
-**Common SSO Issues**:
-- **Token expired**: Run `aws sso login --profile your-profile-name`
-- **No credentials**: Set `export AWS_PROFILE=your-profile-name`
-- **Wrong profile**: Check with `aws configure list-profiles`
-
-**Verify SSO session**:
-```bash
-aws sts get-caller-identity --profile your-profile-name
-```
-
-### Python Dependencies
-
-```
-boto3>=1.34.0
-bedrock-agentcore>=1.0.0
-strands-agents>=1.0.0
-python-dotenv>=1.0.0
-streamlit>=1.30.0
-mcp>=1.9.0
-python-jose[cryptography]>=3.4.0
-pyarrow>=14.0.0
-pandas>=2.0.0
-```
-
----
 
 ## Quick Start
 
@@ -285,14 +235,21 @@ The fastest way to deploy the complete system is through the provided Jupyter no
 
 ### Prerequisites
 
-Ensure you have AWS credentials configured (see [AWS SSO Configuration](#aws-sso-configuration-if-using-sso) if using SSO):
+Ensure you have AWS credentials configured:
 
 ```bash
-# If using SSO
+# Option 1: Using .env file (Recommended)
+# Create a .env file in this directory with your AWS credentials:
+# AWS_ACCESS_KEY_ID=your-access-key-id
+# AWS_SECRET_ACCESS_KEY=your-secret-access-key
+# AWS_SESSION_TOKEN=your-session-token  # Optional, for STS credentials
+# AWS_DEFAULT_REGION=us-east-1
+
+# Option 2: If using SSO
 export AWS_PROFILE=your-profile-name
 aws sso login --profile your-profile-name
 
-# If using access keys
+# Option 3: If using access keys
 aws configure
 ```
 
@@ -312,9 +269,11 @@ jupyter notebook
 4. **03-deploy-mcp-server.ipynb** - Deploy MCP server on AgentCore Runtime
 5. **04-deploy-gateway.ipynb** - Deploy Gateway with JWT interceptor
 6. **05-deploy-agent.ipynb** - Deploy conversational AI agent
-7. **06-test-deployment.ipynb** - Test end-to-end flow with OAuth
+7. **06-streamlit-ui-deployment.ipynb** - Test end-to-end flow with OAuth
 
 **Total deployment time**: ~2-3 hours
+
+**Credential Loading**: All notebooks use centralized credential loading that automatically detects and uses credentials from your `.env` file, environment variables, or AWS SSO (in that order of priority). No need to configure credentials separately in each notebook.
 
 Each notebook:
 - Explains what it deploys
@@ -362,7 +321,7 @@ This section provides manual command-line deployment instructions as an alternat
 | 4 | Gateway & Interceptor | `python deploy_interceptor.py` + `python create_gateway.py --yes` | 30 min |
 | 5 | Lakehouse Agent | `python deploy_lakehouse_agent.py --yes` | 30 min |
 | 6 | Streamlit UI | `streamlit run streamlit_app.py` | 5 min |
-| 7 | Testing | `jupyter notebook 06-test-deployment.ipynb` | 15 min |
+
 
 **Total Time**: ~2.5 hours
 
@@ -395,7 +354,7 @@ python deploy_lakehouse_agent.py --yes
 
 # Step 6: Test
 cd ..
-jupyter notebook 06-test-deployment.ipynb
+streamlit run streamlit_app.py
 ```
 
 ### Key Configuration Features
@@ -409,14 +368,6 @@ jupyter notebook 06-test-deployment.ipynb
 ---
 
 ## Testing
-
-### End-to-End Test (Notebook)
-
-Run `06-test-deployment.ipynb`:
-```bash
-jupyter notebook 06-test-deployment.ipynb
-```
-
 **Test flow**:
 1. Get OAuth token from Cognito
 2. Call Agent Runtime with bearer token in header
@@ -444,6 +395,26 @@ Test queries:
 - "Show me all claims"
 - "Get claims summary"
 - "What claims are pending?"
+
+### User-Specific Data Access Demo
+
+The lakehouse agent implements row-level security (RLS) through Lake Formation, ensuring users only see data they're authorized to access. Based on the logged-in user, you can see how user-specific datasets are shared in the screenshots below:
+
+#### Test User 1 - Limited Access
+![Test User 1 - Lakehouse Agent](screenshots/testuser1-lakehouseagent.png)
+
+**User**: `testuser1` - Shows limited dataset access based on user permissions. This user can only see claims and data that they are authorized to view through Lake Formation row-level security policies.
+
+#### Test User 2 - Different Data Scope  
+![Test User 2 - Lakehouse Agent](screenshots/testuser2-lakehouseagent.png)
+
+**User**: `testuser2` - Shows a different set of data based on their specific permissions. Notice how the same query returns different results depending on the authenticated user's access rights.
+
+**Key Security Features Demonstrated**:
+- ✅ **Row-Level Security**: Each user sees only their authorized data
+- ✅ **OAuth Integration**: User identity flows from Cognito through the entire system
+- ✅ **Lake Formation Policies**: Data access controlled at the database level
+- ✅ **Consistent Experience**: Same interface, personalized data based on user context
 
 ---
 
@@ -511,12 +482,45 @@ Processed Date: 2024-01-18"
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
-| **Token has expired** | SSO session expired | Run `aws sso login --profile your-profile` |
-| **No credentials** | AWS_PROFILE not set | `export AWS_PROFILE=your-profile` |
+| **AWS credentials not found** | Missing .env file or invalid credentials | Create .env file with valid AWS credentials |
+| **Token has expired** | STS credentials expired | Update .env with fresh credentials or use SSO |
+| **No credentials** | AWS_PROFILE not set (SSO) | `export AWS_PROFILE=your-profile` |
 | **Bearer token required** | No token in request | Ensure token in Authorization header |
 | **Invalid token** | Token expired or wrong client | Get new token from Cognito |
 | **Gateway timeout** | MCP server slow | Increase Lambda timeout to 300s |
 | **Athena permission denied** | Missing IAM permissions | Check execution role has Athena access |
+
+### Credential Troubleshooting
+
+#### .env File Issues
+
+**Error: "AWS credentials not found" or "No credentials configured"**
+```bash
+# Check if .env file exists
+ls -la .env
+
+# If missing, create it with your credentials:
+cat > .env << EOF
+AWS_ACCESS_KEY_ID=your-access-key-id
+AWS_SECRET_ACCESS_KEY=your-secret-access-key
+AWS_SESSION_TOKEN=your-session-token
+AWS_DEFAULT_REGION=us-east-1
+EOF
+```
+
+**Error: "Token has expired" (when using STS credentials)**
+```bash
+# Get new temporary credentials and update .env file
+# Example using assume-role:
+aws sts assume-role --role-arn arn:aws:iam::ACCOUNT:role/ROLE --role-session-name session
+
+# Then update .env with the new credentials
+```
+
+**Error: "Environment variables not loaded"**
+- Restart Jupyter kernel to reload environment variables
+- Ensure `.env` file is in the correct directory (`02-use-cases/lakehouse-agent/`)
+- Check file permissions: `chmod 600 .env`
 
 ### AWS SSO Troubleshooting
 

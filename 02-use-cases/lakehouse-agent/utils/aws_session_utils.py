@@ -7,7 +7,11 @@ with special handling for AWS SSO authentication. It addresses common issues
 with SSO token expiration and profile detection.
 
 Usage:
-    from aws_session_utils import get_aws_session
+    from utils.aws_session_utils import get_aws_session, load_env_credentials
+
+    # Load credentials from .env file and get session
+    load_env_credentials()
+    session, region, account_id = get_aws_session()
 
     # Auto-detect profile from environment
     session, region, account_id = get_aws_session()
@@ -22,6 +26,7 @@ Usage:
 import boto3
 import os
 import sys
+from pathlib import Path
 from typing import Tuple, Optional
 from botocore.exceptions import (
     NoCredentialsError,
@@ -30,6 +35,96 @@ from botocore.exceptions import (
     TokenRetrievalError,
     SSOTokenLoadError
 )
+
+
+def load_env_credentials(env_path: str = '.env', verbose: bool = True) -> bool:
+    """
+    Load AWS credentials from .env file into environment variables.
+    
+    This function loads environment variables from a .env file, making them
+    available to boto3 and other AWS tools. It's designed to work seamlessly
+    with the get_aws_session() function.
+    
+    Args:
+        env_path: Path to the .env file. Default is '.env' in current directory.
+        verbose: If True, print status messages. Default True.
+        
+    Returns:
+        bool: True if credentials were loaded successfully, False otherwise.
+        
+    Example:
+        >>> from utils.aws_session_utils import load_env_credentials, get_aws_session
+        >>> load_env_credentials()
+        >>> session, region, account_id = get_aws_session()
+    """
+    env_file = Path(env_path)
+    if not env_file.exists():
+        if verbose:
+            print(f"⚠️  .env file not found at {env_path}")
+        return False
+    
+    loaded_vars = []
+    try:
+        with open(env_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if value:  # Only set non-empty values
+                        os.environ[key] = value
+                        loaded_vars.append(key)
+    except Exception as e:
+        if verbose:
+            print(f"❌ Error reading .env file: {e}")
+        return False
+    
+    if loaded_vars:
+        if verbose:
+            print(f"✅ Loaded {len(loaded_vars)} variables from .env file:")
+            for var in loaded_vars:
+                if any(keyword in var.upper() for keyword in ['SECRET', 'TOKEN', 'PASSWORD']):
+                    print(f"   {var}: ****** (hidden)")
+                else:
+                    print(f"   {var}: {os.environ[var]}")
+        
+        # Validate AWS credentials were loaded
+        aws_vars = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_DEFAULT_REGION']
+        has_credentials = bool(
+            os.environ.get('AWS_ACCESS_KEY_ID') and 
+            os.environ.get('AWS_SECRET_ACCESS_KEY')
+        )
+        
+        if verbose:
+            print("\nCurrent AWS environment variables:")
+            for key in aws_vars:
+                value = os.environ.get(key)
+                if value:
+                    if any(keyword in key for keyword in ['SECRET', 'TOKEN']):
+                        print(f"   {key}: {'*' * min(len(value), 20)} (hidden)")
+                    else:
+                        print(f"   {key}: {value}")
+                else:
+                    print(f"   {key}: Not set")
+        
+        if has_credentials:
+            if verbose:
+                print("\n✅ AWS credentials loaded successfully!")
+            return True
+        else:
+            if verbose:
+                print("\n⚠️  AWS credentials not found in .env file")
+                print("   Make sure your .env file contains:")
+                print("   AWS_ACCESS_KEY_ID=your-access-key")
+                print("   AWS_SECRET_ACCESS_KEY=your-secret-key")
+                print("   AWS_SESSION_TOKEN=your-session-token (if using STS)")
+                print("   AWS_DEFAULT_REGION=your-region")
+            return False
+    else:
+        if verbose:
+            print("⚠️  No valid environment variables found in .env file")
+        return False
 
 
 def get_aws_session(
@@ -99,6 +194,51 @@ def get_aws_session(
             print(f"❌ Failed to validate container credentials: {e}")
             # In container, let the error propagate rather than SystemExit
             raise ValueError(f"Container credential validation failed: {e}") from e
+
+    # Check if we have environment variables (from .env or terminal)
+    # This takes precedence over SSO profiles
+    has_env_credentials = bool(
+        os.environ.get('AWS_ACCESS_KEY_ID') and 
+        os.environ.get('AWS_SECRET_ACCESS_KEY')
+    )
+
+    if has_env_credentials:
+        # Use environment variables directly (bypasses SSO)
+        if verbose:
+            print("🔑 Using AWS credentials from environment variables")
+        
+        # Get region from environment or use default
+        region = os.environ.get('AWS_DEFAULT_REGION') or os.environ.get('AWS_REGION') or region_name or 'us-east-1'
+        
+        # Create session with environment credentials
+        session = boto3.Session(
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            aws_session_token=os.environ.get('AWS_SESSION_TOKEN'),  # Optional for STS
+            region_name=region
+        )
+        
+        # Validate credentials
+        try:
+            sts_client = session.client('sts', region_name=region)
+            identity = sts_client.get_caller_identity()
+            account_id = identity['Account']
+            
+            if verbose:
+                print(f"✅ AWS credentials validated")
+                print(f"   Account ID: {account_id}")
+                print(f"   Region: {region}")
+                print(f"   User ARN: {identity['Arn']}")
+            
+            return session, region, account_id
+        except Exception as e:
+            print(f"❌ Failed to validate AWS credentials: {e}")
+            print("\nPlease check your .env file and ensure:")
+            print("1. AWS_ACCESS_KEY_ID is correct")
+            print("2. AWS_SECRET_ACCESS_KEY is correct")
+            print("3. AWS_SESSION_TOKEN is valid (if using STS credentials)")
+            print("4. Credentials have not expired")
+            raise ValueError(f"Environment credential validation failed: {e}") from e
 
     # Determine which profile to use (for local development)
     detected_profile = _detect_profile(profile_name, verbose)
@@ -220,8 +360,6 @@ def _detect_region(
             print(f"🌍 Using region from {env_var}: {region}")
         return region
 
-    # Default to us-east-1
-    region = 'us-east-1'
     if verbose:
         print(f"⚠️  No AWS region configured, using default: {region}")
         print("   To set your region:")

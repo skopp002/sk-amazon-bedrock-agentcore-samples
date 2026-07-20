@@ -118,6 +118,7 @@
 - Cristiano Scandura (scandura)
 - palbiren
 - Gui Ruggiero (guiruggiero)
+- Julia Furst Morgado (juliafmorgado)
 - Visakh Madathil (vmmadathil)
 - JobRamos (jobdram)
 - Will Matos (wilmatos)

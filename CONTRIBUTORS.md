@@ -11,6 +11,7 @@
 - aurbac
 - bergjaak
 - bioerrorlog
+- Bharathi Srinivasan
 - chanbi
 - crupakheti
 - danystinson
@@ -76,7 +77,6 @@
 - Bhuvan Annamreddi
 - Sparsh Wadhwa (SparshWadhwa)
 - Lana Zhang
-- Bharathi Srinivasan
 - Trevor Schiavone
 - Antonio Rodriguez (rodzanto)
 - otamaryx
@@ -121,6 +121,7 @@
 - Julia Furst Morgado (juliafmorgado)
 - Visakh Madathil (vmmadathil)
 - JobRamos (jobdram)
+- Neha Thakur (nehabthakur)
 - Will Matos (wilmatos)
 - Senthil Mohan (skmohan)
 - Guruprasad Seeryada (svguru)
